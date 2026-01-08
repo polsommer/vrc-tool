@@ -8,6 +8,7 @@ import threading
 import tkinter as tk
 import urllib.error
 import urllib.request
+import urllib.parse
 from tkinter import ttk
 from pythonosc import dispatcher, osc_server, udp_client
 
@@ -33,6 +34,8 @@ ANNOUNCEMENTS = [
 AI_DEFAULT_ENDPOINT = "http://localhost:11434/v1/chat/completions"
 AI_DEFAULT_MODEL = "llama3.1"
 AI_TIMEOUT_SECONDS = 20
+AI_MEMORY_FILE = "ai_memory.jsonl"
+AI_MEMORY_MAX_ITEMS = 12
 
 PLAYER_JOIN_RE = re.compile(r"OnPlayerJoined\s+(.+)$")
 PLAYER_LEFT_RE = re.compile(r"OnPlayerLeft\s+(.+)$")
@@ -130,6 +133,8 @@ class VrcAdminTool:
         self.ai_temp_var = tk.StringVar(value="0.6")
         self.ai_tokens_var = tk.StringVar(value="350")
         self.ai_use_amd_var = tk.BooleanVar(value=True)
+        self.ai_local_only_var = tk.BooleanVar(value=True)
+        self.ai_memory_var = tk.BooleanVar(value=True)
 
         settings = ttk.Frame(ai_box)
         settings.pack(fill=tk.X)
@@ -169,6 +174,16 @@ class VrcAdminTool:
             text="Prefer AMD GPU (ROCm)",
             variable=self.ai_use_amd_var
         ).grid(row=2, column=2, columnspan=2, sticky=tk.W, pady=(6, 0))
+        ttk.Checkbutton(
+            settings,
+            text="Local-only (localhost)",
+            variable=self.ai_local_only_var
+        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
+        ttk.Checkbutton(
+            settings,
+            text="Enable self-learning memory",
+            variable=self.ai_memory_var
+        ).grid(row=3, column=2, columnspan=2, sticky=tk.W, pady=(6, 0))
 
         actions = ttk.Frame(ai_box)
         actions.pack(fill=tk.X, pady=(8, 6))
@@ -325,6 +340,7 @@ class VrcAdminTool:
         self.ai_busy = False
         self.ai_status.set("Idle")
         self._set_ai_output(output)
+        self._append_ai_memory(mode, output)
         self.queue.put(f"AI {mode.upper()} RESULT -> {output.splitlines()[0][:160]}")
 
     def _set_ai_output(self, text):
@@ -339,6 +355,9 @@ class VrcAdminTool:
         endpoint = self.ai_endpoint_var.get().strip()
         model = self.ai_model_var.get().strip()
         if endpoint and model:
+            if self.ai_local_only_var.get() and not self._is_local_endpoint(endpoint):
+                self.queue.put("AI REQUEST BLOCKED -> Non-local endpoint while local-only is enabled.")
+                return self._fallback_ai(mode)
             response = self._request_ai_completion(endpoint, model, prompt)
             if response:
                 return response
@@ -363,12 +382,19 @@ class VrcAdminTool:
                 "Keep it under 40 lines, use standard library only, and include brief comments."
             )
 
-        return (
+        prompt = (
             "You are an assistant for a VRChat admin tool that supports self-learning workflows. "
             f"Hardware hint: {hardware_hint}. "
             "Return plain text only.\n\n"
             f"{request}"
         )
+        if self.ai_memory_var.get():
+            memory = self._load_ai_memory()
+            if memory:
+                prompt = (
+                    f"{prompt}\n\nRecent local memory (for self-learning context):\n{memory}"
+                )
+        return prompt
 
     def _request_ai_completion(self, endpoint, model, prompt):
         headers = {"Content-Type": "application/json"}
@@ -435,6 +461,49 @@ class VrcAdminTool:
         ]
         snippet = random.choice(snippets)
         return "```python\n" + "\n".join(snippet) + "\n```"
+
+    def _is_local_endpoint(self, endpoint):
+        try:
+            parsed = urllib.parse.urlparse(endpoint)
+        except ValueError:
+            return False
+        hostname = (parsed.hostname or "").lower()
+        return hostname in {"localhost", "127.0.0.1", "::1"}
+
+    def _append_ai_memory(self, mode, output):
+        if not self.ai_memory_var.get() or not output:
+            return
+        record = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "mode": mode,
+            "output": output.strip(),
+        }
+        try:
+            with open(AI_MEMORY_FILE, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record) + "\n")
+        except OSError as exc:
+            self.queue.put(f"AI MEMORY WRITE FAILED -> {exc}")
+
+    def _load_ai_memory(self):
+        if not os.path.exists(AI_MEMORY_FILE):
+            return ""
+        try:
+            with open(AI_MEMORY_FILE, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()[-AI_MEMORY_MAX_ITEMS:]
+        except OSError as exc:
+            self.queue.put(f"AI MEMORY READ FAILED -> {exc}")
+            return ""
+        entries = []
+        for line in lines:
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            mode = data.get("mode", "unknown")
+            output = data.get("output", "").strip()
+            if output:
+                entries.append(f"- {mode}: {output}")
+        return "\n".join(entries)
 
     def _detect_amd_gpu(self):
         return any(
