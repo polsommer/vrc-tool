@@ -31,6 +31,19 @@ ANNOUNCEMENTS = [
     "Reminder: Keep language and behavior appropriate.",
 ]
 
+QUICK_ANNOUNCEMENTS = [
+    "Quick reminder: keep it friendly and respectful.",
+    "Please avoid yelling or mic spam. Thanks!",
+    "No hate speech or harassment. Be kind.",
+    "Keep conversations PG-13 in public areas.",
+    "If you need help, ping an admin.",
+    "Please respect personal space and boundaries.",
+    "No disruptive avatars or effects in shared areas.",
+    "We are recording moderation actions. Behave accordingly.",
+    "New here? Ask for the rules anytime.",
+    "Let’s keep the room chill and welcoming.",
+]
+
 AI_DEFAULT_ENDPOINT = "http://localhost:11434/v1/chat/completions"
 AI_DEFAULT_MODEL = "llama3.1"
 AI_TIMEOUT_SECONDS = 20
@@ -90,6 +103,21 @@ class VrcAdminTool:
             chatbox,
             text="Send Admin Message",
             command=self.send_admin_message
+        ).pack(fill=tk.X)
+
+        quick_box = ttk.LabelFrame(main, text="Quick Announcements", padding=10)
+        quick_box.pack(fill=tk.X, pady=10)
+
+        self.quick_list = tk.Listbox(quick_box, height=6)
+        self.quick_list.pack(fill=tk.X, expand=True, pady=(0, 6))
+        for message in QUICK_ANNOUNCEMENTS:
+            self.quick_list.insert(tk.END, message)
+        self.quick_list.bind("<Double-Button-1>", self.send_quick_announcement)
+
+        ttk.Button(
+            quick_box,
+            text="Send Selected Quick Announcement",
+            command=self.send_quick_announcement
         ).pack(fill=tk.X)
 
         # Join Logger
@@ -273,6 +301,16 @@ class VrcAdminTool:
         self.send_chatbox(f"[ADMIN] {text}")
         self.log_event(f"ADMIN CHAT: {text}")
         self.chat_var.set("")
+
+    def send_quick_announcement(self, _event=None):
+        selection = self.quick_list.curselection()
+        if not selection:
+            return
+        text = self.quick_list.get(selection[0]).strip()
+        if not text:
+            return
+        self.send_chatbox(f"[ADMIN] {text}")
+        self.log_event(f"ADMIN QUICK: {text}")
 
     def log_join(self):
         name = self.join_var.get().strip()
