@@ -3,6 +3,7 @@ import json
 import os
 import queue
 import random
+import re
 import threading
 import tkinter as tk
 import urllib.error
@@ -33,6 +34,9 @@ AI_DEFAULT_ENDPOINT = "http://localhost:11434/v1/chat/completions"
 AI_DEFAULT_MODEL = "llama3.1"
 AI_TIMEOUT_SECONDS = 20
 
+PLAYER_JOIN_RE = re.compile(r"OnPlayerJoined\s+(.+)$")
+PLAYER_LEFT_RE = re.compile(r"OnPlayerLeft\s+(.+)$")
+
 # ---------------------------------------
 
 
@@ -52,6 +56,7 @@ class VrcAdminTool:
 
         self.announce_index = 0
         self.ai_busy = False
+        self.active_players = []
 
         self._build_ui()
         self._poll_queue()
@@ -96,6 +101,21 @@ class VrcAdminTool:
             text="Log User Join",
             command=self.log_join
         ).pack(fill=tk.X, pady=4)
+
+        ttk.Label(joinbox, text="VRChat Log File").pack(anchor=tk.W, pady=(6, 0))
+        self.log_path_var = tk.StringVar(value=self._find_latest_vrchat_log() or "")
+        ttk.Entry(joinbox, textvariable=self.log_path_var).pack(fill=tk.X)
+        ttk.Button(
+            joinbox,
+            text="Scan VRChat Log for Players",
+            command=self.load_players_from_log
+        ).pack(fill=tk.X, pady=4)
+
+        players_box = ttk.LabelFrame(main, text="Active Players (from log)", padding=10)
+        players_box.pack(fill=tk.BOTH, pady=10)
+
+        self.player_list = tk.Listbox(players_box, height=6)
+        self.player_list.pack(fill=tk.BOTH, expand=True)
 
         # AI Assistant
         ai_box = ttk.LabelFrame(main, text="AI Assistant (Ideas + Code)", padding=10)
@@ -245,6 +265,28 @@ class VrcAdminTool:
             return
         self.log_event(f"USER JOINED: {name}")
         self.join_var.set("")
+
+    def load_players_from_log(self):
+        log_path = self.log_path_var.get().strip()
+        if not log_path:
+            log_path = self._find_latest_vrchat_log()
+            if log_path:
+                self.log_path_var.set(log_path)
+
+        if not log_path or not os.path.exists(log_path):
+            self.log_event("VRCHAT LOG NOT FOUND: Set the log path and try again.")
+            return
+
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as file:
+                lines = file.readlines()
+        except OSError as exc:
+            self.log_event(f"VRCHAT LOG READ ERROR: {exc}")
+            return
+
+        players = self._extract_active_players(lines)
+        self._update_player_list(players)
+        self.log_event(f"VRCHAT PLAYERS FOUND: {len(players)}")
 
     def send_chatbox(self, text):
         self.chat.send_message(
@@ -399,6 +441,56 @@ class VrcAdminTool:
             os.path.exists(path)
             for path in ("/sys/module/amdgpu", "/opt/rocm", "/dev/kfd")
         )
+
+    def _default_vrchat_log_dir(self):
+        home = os.path.expanduser("~")
+        windows_path = os.path.join(
+            home,
+            "AppData",
+            "LocalLow",
+            "VRChat",
+            "VRChat",
+        )
+        return windows_path
+
+    def _find_latest_vrchat_log(self):
+        log_dir = self._default_vrchat_log_dir()
+        if not os.path.isdir(log_dir):
+            return ""
+        candidates = []
+        for name in os.listdir(log_dir):
+            if name.startswith("output_log") and name.endswith(".txt"):
+                path = os.path.join(log_dir, name)
+                candidates.append(path)
+        if not candidates:
+            return ""
+        return max(candidates, key=os.path.getmtime)
+
+    def _extract_active_players(self, lines):
+        status = {}
+        order = []
+        for line in lines:
+            joined = PLAYER_JOIN_RE.search(line)
+            if joined:
+                name = joined.group(1).strip()
+                status[name] = True
+                if name not in order:
+                    order.append(name)
+                continue
+            left = PLAYER_LEFT_RE.search(line)
+            if left:
+                name = left.group(1).strip()
+                status[name] = False
+                if name not in order:
+                    order.append(name)
+        active = [name for name in order if status.get(name)]
+        return active
+
+    def _update_player_list(self, players):
+        self.active_players = players
+        self.player_list.delete(0, tk.END)
+        for name in players:
+            self.player_list.insert(tk.END, name)
 
     @staticmethod
     def _parse_float(value, fallback):
