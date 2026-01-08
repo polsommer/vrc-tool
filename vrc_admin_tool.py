@@ -1,16 +1,28 @@
 import datetime
 import queue
+import socket
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import ttk
 
 from pythonosc import dispatcher
 from pythonosc import osc_server
 
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST_FALLBACK = "0.0.0.0"
 DEFAULT_PORT = 9001
 LOG_FILE = "vrc_admin_log.txt"
+VRC_OSC_DOCS_URL = "https://docs.vrchat.com/docs/osc-overview"
+
+
+def get_local_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return DEFAULT_HOST_FALLBACK
 
 
 class AdminToolApp:
@@ -34,7 +46,8 @@ class AdminToolApp:
         settings.pack(fill=tk.X)
 
         ttk.Label(settings, text="Host").grid(row=0, column=0, sticky=tk.W)
-        self.host_var = tk.StringVar(value=DEFAULT_HOST)
+        local_ip = get_local_ip()
+        self.host_var = tk.StringVar(value=local_ip)
         ttk.Entry(settings, textvariable=self.host_var, width=24).grid(
             row=0, column=1, padx=6, sticky=tk.W
         )
@@ -59,6 +72,19 @@ class AdminToolApp:
             settings, text="Stop", command=self.stop_listener, state=tk.DISABLED
         )
         self.stop_button.grid(row=0, column=6, padx=6)
+
+        ttk.Label(settings, text=f"Local IP: {local_ip}").grid(
+            row=1, column=0, columnspan=4, sticky=tk.W, pady=(6, 0)
+        )
+
+        vrc_link = ttk.Label(
+            settings, text="VRChat OSC docs", foreground="#1a73e8", cursor="hand2"
+        )
+        vrc_link.grid(row=1, column=4, columnspan=3, sticky=tk.W, pady=(6, 0))
+        vrc_link.bind(
+            "<Button-1>",
+            lambda _: webbrowser.open(VRC_OSC_DOCS_URL),
+        )
 
         settings.columnconfigure(7, weight=1)
 
