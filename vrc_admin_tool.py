@@ -1,280 +1,202 @@
 import datetime
 import queue
-import socket
 import threading
 import tkinter as tk
-import webbrowser
 from tkinter import ttk
+from pythonosc import dispatcher, osc_server, udp_client
 
-from pythonosc import dispatcher
-from pythonosc import osc_server
+# ---------------- CONFIG ----------------
 
+OSC_LISTEN_IP = "127.0.0.1"
+OSC_LISTEN_PORT = 9001
 
-DEFAULT_HOST_FALLBACK = "0.0.0.0"
-DEFAULT_PORT = 9001
+VRC_SEND_IP = "127.0.0.1"
+VRC_SEND_PORT = 9000
+
+ANNOUNCE_INTERVAL = 300  # 5 minutes
 LOG_FILE = "vrc_admin_log.txt"
-VRC_OSC_DOCS_URL = "https://docs.vrchat.com/docs/osc-overview"
+
+ANNOUNCEMENTS = [
+    "Welcome! Please follow the world rules.",
+    "This instance is moderated. Be respectful.",
+    "Admins are present. Harassment will not be tolerated.",
+    "If you need help, contact an admin.",
+    "Reminder: Keep language and behavior appropriate.",
+]
+
+# ---------------------------------------
 
 
-def get_local_ip() -> str:
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("8.8.8.8", 80))
-            return sock.getsockname()[0]
-    except OSError:
-        return DEFAULT_HOST_FALLBACK
-
-
-class AdminToolApp:
-    def __init__(self, root: tk.Tk) -> None:
+class VrcAdminTool:
+    def __init__(self, root):
         self.root = root
-        self.root.title("VRC Admin Tool")
-        self.event_queue: queue.Queue[str] = queue.Queue()
-        self.users: set[str] = set()
-        self.server: osc_server.ThreadingOSCUDPServer | None = None
-        self.server_thread: threading.Thread | None = None
-        self.last_check_var = tk.StringVar(value="Last check: not yet run")
+        self.root.title("VRChat Admin Tool")
+        self.root.geometry("950x700")
+
+        self.queue = queue.Queue()
+        self.server = None
+        self.running = False
+
+        self.chat = udp_client.SimpleUDPClient(
+            VRC_SEND_IP, VRC_SEND_PORT
+        )
+
+        self.announce_index = 0
 
         self._build_ui()
-        self._schedule_queue_poll()
-        self._schedule_admin_checks()
+        self._poll_queue()
 
-    def _build_ui(self) -> None:
-        self.root.geometry("900x600")
+    # ---------------- UI ----------------
+
+    def _build_ui(self):
         main = ttk.Frame(self.root, padding=12)
         main.pack(fill=tk.BOTH, expand=True)
 
-        settings = ttk.LabelFrame(main, text="OSC Listener", padding=10)
-        settings.pack(fill=tk.X)
+        self.status = tk.StringVar(value="Stopped")
+        ttk.Label(main, textvariable=self.status).pack(anchor=tk.W)
 
-        ttk.Label(settings, text="Host").grid(row=0, column=0, sticky=tk.W)
-        local_ip = get_local_ip()
-        self.host_var = tk.StringVar(value=local_ip)
-        ttk.Entry(settings, textvariable=self.host_var, width=24).grid(
-            row=0, column=1, padx=6, sticky=tk.W
-        )
+        ctrl = ttk.Frame(main)
+        ctrl.pack(fill=tk.X, pady=6)
 
-        ttk.Label(settings, text="Port").grid(row=0, column=2, sticky=tk.W)
-        self.port_var = tk.IntVar(value=DEFAULT_PORT)
-        ttk.Entry(settings, textvariable=self.port_var, width=10).grid(
-            row=0, column=3, padx=6, sticky=tk.W
-        )
+        ttk.Button(ctrl, text="Start Admin System", command=self.start).pack(side=tk.LEFT)
+        ttk.Button(ctrl, text="Stop", command=self.stop).pack(side=tk.LEFT, padx=6)
 
-        self.status_var = tk.StringVar(value="Stopped")
-        ttk.Label(settings, textvariable=self.status_var).grid(
-            row=0, column=4, padx=6, sticky=tk.W
-        )
+        # Admin Chatbox
+        chatbox = ttk.LabelFrame(main, text="Admin Chatbox", padding=10)
+        chatbox.pack(fill=tk.X, pady=10)
 
-        self.start_button = ttk.Button(
-            settings, text="Start Listening", command=self.start_listener
-        )
-        self.start_button.grid(row=0, column=5, padx=6)
-
-        self.stop_button = ttk.Button(
-            settings, text="Stop", command=self.stop_listener, state=tk.DISABLED
-        )
-        self.stop_button.grid(row=0, column=6, padx=6)
-
-        ttk.Label(settings, text=f"Local IP: {local_ip}").grid(
-            row=1, column=0, columnspan=4, sticky=tk.W, pady=(6, 0)
-        )
-
-        vrc_link = ttk.Label(
-            settings, text="VRChat OSC docs", foreground="#1a73e8", cursor="hand2"
-        )
-        vrc_link.grid(row=1, column=4, columnspan=3, sticky=tk.W, pady=(6, 0))
-        vrc_link.bind(
-            "<Button-1>",
-            lambda _: webbrowser.open(VRC_OSC_DOCS_URL),
-        )
-
-        settings.columnconfigure(7, weight=1)
-
-        admin_box = ttk.LabelFrame(main, text="VRChat Admin Box", padding=10)
-        admin_box.pack(fill=tk.X, pady=(12, 0))
-        ttk.Label(
-            admin_box,
-            text=(
-                "Admin Mode Online: monitoring lobby activity, keeping logs, "
-                "and running scheduled safety checks."
-            ),
-            wraplength=780,
-            foreground="#4a5568",
-        ).pack(anchor=tk.W)
-        ttk.Label(admin_box, textvariable=self.last_check_var).pack(
-            anchor=tk.W, pady=(6, 0)
-        )
-
-        body = ttk.Frame(main)
-        body.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
-
-        log_frame = ttk.LabelFrame(body, text="Event Log", padding=10)
-        log_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self.log_text = tk.Text(log_frame, height=20, wrap=tk.WORD)
-        self.log_text.pack(fill=tk.BOTH, expand=True)
-        self.log_text.configure(state=tk.DISABLED)
-
-        user_frame = ttk.LabelFrame(body, text="Users in Lobby", padding=10)
-        user_frame.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.user_list = tk.Listbox(user_frame, height=20)
-        self.user_list.pack(fill=tk.BOTH, expand=True)
-
-        controls = ttk.Frame(user_frame)
-        controls.pack(fill=tk.X, pady=(10, 0))
-
-        self.user_entry_var = tk.StringVar()
-        ttk.Entry(controls, textvariable=self.user_entry_var).pack(
-            fill=tk.X, pady=(0, 6)
-        )
+        self.chat_var = tk.StringVar()
+        ttk.Entry(chatbox, textvariable=self.chat_var).pack(fill=tk.X, pady=4)
 
         ttk.Button(
-            controls, text="Add User", command=self.add_manual_user
+            chatbox,
+            text="Send Admin Message",
+            command=self.send_admin_message
         ).pack(fill=tk.X)
+
+        # Join Logger
+        joinbox = ttk.LabelFrame(main, text="Manual Join Logger", padding=10)
+        joinbox.pack(fill=tk.X, pady=10)
+
+        self.join_var = tk.StringVar()
+        ttk.Entry(joinbox, textvariable=self.join_var).pack(fill=tk.X)
+
         ttk.Button(
-            controls, text="Remove Selected", command=self.remove_selected_user
+            joinbox,
+            text="Log User Join",
+            command=self.log_join
         ).pack(fill=tk.X, pady=4)
-        ttk.Button(
-            controls, text="Scan Users", command=self.scan_users
-        ).pack(fill=tk.X)
 
-    def _schedule_queue_poll(self) -> None:
-        self._process_queue()
-        self.root.after(200, self._schedule_queue_poll)
+        # Log Output
+        logbox = ttk.LabelFrame(main, text="System Log", padding=10)
+        logbox.pack(fill=tk.BOTH, expand=True)
 
-    def _schedule_admin_checks(self) -> None:
-        self._run_admin_check()
-        self.root.after(60_000, self._schedule_admin_checks)
+        self.log = tk.Text(logbox, height=20, wrap=tk.WORD)
+        self.log.pack(fill=tk.BOTH, expand=True)
+        self.log.configure(state=tk.DISABLED)
 
-    def _run_admin_check(self) -> None:
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.last_check_var.set(f"Last check: {timestamp}")
-        self.event_queue.put("Admin check: running scheduled scan")
-        self.scan_users()
+    # ---------------- Core ----------------
 
-    def _process_queue(self) -> None:
-        while not self.event_queue.empty():
-            message = self.event_queue.get_nowait()
-            self._append_log(message)
+    def start(self):
+        if self.running:
+            return
 
-    def _append_log(self, message: str) -> None:
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{timestamp}] {message}"
-        self.log_text.configure(state=tk.NORMAL)
-        self.log_text.insert(tk.END, line + "\n")
-        self.log_text.see(tk.END)
-        self.log_text.configure(state=tk.DISABLED)
-        with open(LOG_FILE, "a", encoding="utf-8") as log_file:
-            log_file.write(line + "\n")
+        disp = dispatcher.Dispatcher()
+        disp.map("/*", self.on_osc)
 
-    def start_listener(self) -> None:
+        try:
+            self.server = osc_server.ThreadingOSCUDPServer(
+                (OSC_LISTEN_IP, OSC_LISTEN_PORT),
+                disp
+            )
+        except OSError as e:
+            self.log_event(f"OSC ERROR: {e}")
+            return
+
+        threading.Thread(
+            target=self.server.serve_forever,
+            daemon=True
+        ).start()
+
+        self.running = True
+        self.status.set("Admin System Active")
+        self.log_event("Admin system started")
+
+        self.root.after(ANNOUNCE_INTERVAL * 1000, self.announcement_cycle)
+
+    def stop(self):
+        if not self.running:
+            return
+
+        self.running = False
         if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+            self.server = None
+
+        self.status.set("Stopped")
+        self.log_event("Admin system stopped")
+
+    # ---------------- Functions ----------------
+
+    def announcement_cycle(self):
+        if not self.running:
             return
-        host = self.host_var.get()
-        port = self.port_var.get()
-        osc_dispatcher = dispatcher.Dispatcher()
-        osc_dispatcher.map("/*", self._handle_osc)
-        self.server = osc_server.ThreadingOSCUDPServer(
-            (host, port), osc_dispatcher
+
+        msg = ANNOUNCEMENTS[self.announce_index]
+        self.announce_index = (self.announce_index + 1) % len(ANNOUNCEMENTS)
+
+        self.send_chatbox(f"[ADMIN] {msg}")
+        self.log_event(f"AUTO ANNOUNCEMENT: {msg}")
+
+        self.root.after(ANNOUNCE_INTERVAL * 1000, self.announcement_cycle)
+
+    def send_admin_message(self):
+        text = self.chat_var.get().strip()
+        if not text:
+            return
+        self.send_chatbox(f"[ADMIN] {text}")
+        self.log_event(f"ADMIN CHAT: {text}")
+        self.chat_var.set("")
+
+    def log_join(self):
+        name = self.join_var.get().strip()
+        if not name:
+            return
+        self.log_event(f"USER JOINED: {name}")
+        self.join_var.set("")
+
+    def send_chatbox(self, text):
+        self.chat.send_message(
+            "/chatbox/input",
+            [text, True, True]
         )
-        self.server_thread = threading.Thread(
-            target=self.server.serve_forever, daemon=True
-        )
-        self.server_thread.start()
-        self.status_var.set(f"Listening on {host}:{port}")
-        self.start_button.configure(state=tk.DISABLED)
-        self.stop_button.configure(state=tk.NORMAL)
-        self.event_queue.put("OSC listener started")
 
-    def stop_listener(self) -> None:
-        if not self.server:
-            return
-        self.server.shutdown()
-        self.server.server_close()
-        self.server = None
-        self.status_var.set("Stopped")
-        self.start_button.configure(state=tk.NORMAL)
-        self.stop_button.configure(state=tk.DISABLED)
-        self.event_queue.put("OSC listener stopped")
+    def on_osc(self, addr, *args):
+        payload = ", ".join(str(a) for a in args) if args else "-"
+        self.queue.put(f"OSC {addr} -> {payload}")
 
-    def _handle_osc(self, address: str, *args: object) -> None:
-        user = self._extract_user(args)
-        event = self._infer_event(address, args)
-        if event == "join" and user:
-            self._add_user(user)
-            self.event_queue.put(f"{user} joined the lobby")
-        elif event == "leave" and user:
-            self._remove_user(user)
-            self.event_queue.put(f"{user} left the lobby")
-        else:
-            payload = ", ".join(str(arg) for arg in args)
-            if user:
-                payload = f"{user} | {payload}"
-            self.event_queue.put(f"OSC {address} -> {payload}")
+    # ---------------- Logging ----------------
 
-    def _extract_user(self, args: tuple[object, ...]) -> str | None:
-        for arg in args:
-            if isinstance(arg, str) and arg.strip():
-                return arg.strip()
-        return None
+    def log_event(self, msg):
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{timestamp}] {msg}"
 
-    def _infer_event(self, address: str, args: tuple[object, ...]) -> str:
-        lowered = address.lower()
-        if "join" in lowered or "enter" in lowered:
-            return "join"
-        if "leave" in lowered or "exit" in lowered:
-            return "leave"
-        for arg in args:
-            if isinstance(arg, str):
-                arg_lower = arg.lower()
-                if "joined" in arg_lower:
-                    return "join"
-                if "left" in arg_lower:
-                    return "leave"
-        return "event"
+        self.log.configure(state=tk.NORMAL)
+        self.log.insert(tk.END, line + "\n")
+        self.log.see(tk.END)
+        self.log.configure(state=tk.DISABLED)
 
-    def _add_user(self, user: str) -> None:
-        if user in self.users:
-            return
-        self.users.add(user)
-        self.user_list.insert(tk.END, user)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
-    def _remove_user(self, user: str) -> None:
-        if user not in self.users:
-            return
-        self.users.remove(user)
-        items = list(self.user_list.get(0, tk.END))
-        for index, name in enumerate(items):
-            if name == user:
-                self.user_list.delete(index)
-                break
-
-    def add_manual_user(self) -> None:
-        user = self.user_entry_var.get().strip()
-        if not user:
-            return
-        self._add_user(user)
-        self.event_queue.put(f"Manual add: {user}")
-        self.user_entry_var.set("")
-
-    def remove_selected_user(self) -> None:
-        selection = self.user_list.curselection()
-        if not selection:
-            return
-        user = self.user_list.get(selection[0])
-        self._remove_user(user)
-        self.event_queue.put(f"Removed: {user}")
-
-    def scan_users(self) -> None:
-        if not self.users:
-            self.event_queue.put("Scan complete: no users detected")
-            return
-        summary = ", ".join(sorted(self.users))
-        self.event_queue.put(f"Scan complete: {summary}")
+    def _poll_queue(self):
+        while not self.queue.empty():
+            self.log_event(self.queue.get())
+        self.root.after(150, self._poll_queue)
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = AdminToolApp(root)
+    VrcAdminTool(root)
     root.mainloop()
