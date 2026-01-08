@@ -1,7 +1,12 @@
 import datetime
+import json
+import os
 import queue
+import random
 import threading
 import tkinter as tk
+import urllib.error
+import urllib.request
 from tkinter import ttk
 from pythonosc import dispatcher, osc_server, udp_client
 
@@ -24,6 +29,10 @@ ANNOUNCEMENTS = [
     "Reminder: Keep language and behavior appropriate.",
 ]
 
+AI_DEFAULT_ENDPOINT = "http://localhost:11434/v1/chat/completions"
+AI_DEFAULT_MODEL = "llama3.1"
+AI_TIMEOUT_SECONDS = 20
+
 # ---------------------------------------
 
 
@@ -42,6 +51,7 @@ class VrcAdminTool:
         )
 
         self.announce_index = 0
+        self.ai_busy = False
 
         self._build_ui()
         self._poll_queue()
@@ -86,6 +96,76 @@ class VrcAdminTool:
             text="Log User Join",
             command=self.log_join
         ).pack(fill=tk.X, pady=4)
+
+        # AI Assistant
+        ai_box = ttk.LabelFrame(main, text="AI Assistant (Ideas + Code)", padding=10)
+        ai_box.pack(fill=tk.BOTH, pady=10)
+
+        self.ai_status = tk.StringVar(value="Idle")
+        ttk.Label(ai_box, textvariable=self.ai_status).pack(anchor=tk.W, pady=(0, 6))
+
+        self.ai_endpoint_var = tk.StringVar(value=AI_DEFAULT_ENDPOINT)
+        self.ai_model_var = tk.StringVar(value=AI_DEFAULT_MODEL)
+        self.ai_key_var = tk.StringVar(value="")
+        self.ai_temp_var = tk.StringVar(value="0.6")
+        self.ai_tokens_var = tk.StringVar(value="350")
+        self.ai_use_amd_var = tk.BooleanVar(value=True)
+
+        settings = ttk.Frame(ai_box)
+        settings.pack(fill=tk.X)
+        settings.columnconfigure(1, weight=1)
+        settings.columnconfigure(3, weight=1)
+
+        ttk.Label(settings, text="Endpoint (OpenAI-compatible)").grid(
+            row=0, column=0, sticky=tk.W
+        )
+        ttk.Entry(settings, textvariable=self.ai_endpoint_var).grid(
+            row=0, column=1, sticky=tk.EW, padx=(6, 12)
+        )
+        ttk.Label(settings, text="Model").grid(row=0, column=2, sticky=tk.W)
+        ttk.Entry(settings, textvariable=self.ai_model_var, width=20).grid(
+            row=0, column=3, sticky=tk.EW
+        )
+
+        ttk.Label(settings, text="API Key (optional)").grid(
+            row=1, column=0, sticky=tk.W, pady=(6, 0)
+        )
+        ttk.Entry(settings, textvariable=self.ai_key_var, show="*").grid(
+            row=1, column=1, sticky=tk.EW, padx=(6, 12), pady=(6, 0)
+        )
+        ttk.Label(settings, text="Temp").grid(row=1, column=2, sticky=tk.W, pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.ai_temp_var, width=8).grid(
+            row=1, column=3, sticky=tk.W, pady=(6, 0)
+        )
+
+        ttk.Label(settings, text="Max Tokens").grid(
+            row=2, column=0, sticky=tk.W, pady=(6, 0)
+        )
+        ttk.Entry(settings, textvariable=self.ai_tokens_var, width=8).grid(
+            row=2, column=1, sticky=tk.W, padx=(6, 12), pady=(6, 0)
+        )
+        ttk.Checkbutton(
+            settings,
+            text="Prefer AMD GPU (ROCm)",
+            variable=self.ai_use_amd_var
+        ).grid(row=2, column=2, columnspan=2, sticky=tk.W, pady=(6, 0))
+
+        actions = ttk.Frame(ai_box)
+        actions.pack(fill=tk.X, pady=(8, 6))
+        ttk.Button(
+            actions,
+            text="Generate Admin Idea",
+            command=self.generate_admin_idea
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Generate Code Snippet",
+            command=self.generate_code_snippet
+        ).pack(side=tk.LEFT, padx=6)
+
+        self.ai_output = tk.Text(ai_box, height=8, wrap=tk.WORD)
+        self.ai_output.pack(fill=tk.BOTH, expand=True)
+        self.ai_output.configure(state=tk.DISABLED)
 
         # Log Output
         logbox = ttk.LabelFrame(main, text="System Log", padding=10)
@@ -175,6 +255,164 @@ class VrcAdminTool:
     def on_osc(self, addr, *args):
         payload = ", ".join(str(a) for a in args) if args else "-"
         self.queue.put(f"OSC {addr} -> {payload}")
+
+    # ---------------- AI Assistant ----------------
+
+    def generate_admin_idea(self):
+        self._start_ai_task("admin")
+
+    def generate_code_snippet(self):
+        self._start_ai_task("code")
+
+    def _start_ai_task(self, mode):
+        if self.ai_busy:
+            return
+        self.ai_busy = True
+        self.ai_status.set("Thinking...")
+        thread = threading.Thread(target=self._run_ai_task, args=(mode,), daemon=True)
+        thread.start()
+
+    def _run_ai_task(self, mode):
+        try:
+            output = self._ai_generate(mode)
+        except Exception as exc:
+            output = f"AI Error: {exc}"
+        self.root.after(0, lambda: self._finish_ai_task(mode, output))
+
+    def _finish_ai_task(self, mode, output):
+        self.ai_busy = False
+        self.ai_status.set("Idle")
+        self._set_ai_output(output)
+        self.queue.put(f"AI {mode.upper()} RESULT -> {output.splitlines()[0][:160]}")
+
+    def _set_ai_output(self, text):
+        self.ai_output.configure(state=tk.NORMAL)
+        self.ai_output.delete("1.0", tk.END)
+        self.ai_output.insert(tk.END, text)
+        self.ai_output.see(tk.END)
+        self.ai_output.configure(state=tk.DISABLED)
+
+    def _ai_generate(self, mode):
+        prompt = self._build_ai_prompt(mode)
+        endpoint = self.ai_endpoint_var.get().strip()
+        model = self.ai_model_var.get().strip()
+        if endpoint and model:
+            response = self._request_ai_completion(endpoint, model, prompt)
+            if response:
+                return response
+        return self._fallback_ai(mode)
+
+    def _build_ai_prompt(self, mode):
+        amd_detected = self._detect_amd_gpu()
+        amd_prefer = self.ai_use_amd_var.get()
+        hardware_hint = "AMD GPU preferred" if amd_prefer else "GPU optional"
+        if amd_prefer and not amd_detected:
+            hardware_hint += " (no AMD GPU detected locally)"
+
+        if mode == "admin":
+            request = (
+                "Generate 5 concise, high-impact ideas to improve a VRChat admin tool. "
+                "Focus on safety, automation, moderation workflows, and community health. "
+                "Each idea should be 1-2 sentences with a short title."
+            )
+        else:
+            request = (
+                "Provide a Python code snippet for a VRChat admin tool feature. "
+                "Keep it under 40 lines, use standard library only, and include brief comments."
+            )
+
+        return (
+            "You are an assistant for a VRChat admin tool that supports self-learning workflows. "
+            f"Hardware hint: {hardware_hint}. "
+            "Return plain text only.\n\n"
+            f"{request}"
+        )
+
+    def _request_ai_completion(self, endpoint, model, prompt):
+        headers = {"Content-Type": "application/json"}
+        api_key = self.ai_key_var.get().strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        temperature = self._parse_float(self.ai_temp_var.get(), 0.6)
+        max_tokens = self._parse_int(self.ai_tokens_var.get(), 350)
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(endpoint, data=data, headers=headers)
+
+        try:
+            with urllib.request.urlopen(request, timeout=AI_TIMEOUT_SECONDS) as response:
+                raw = response.read().decode("utf-8")
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            self.queue.put(f"AI REQUEST FAILED -> {exc}")
+            return ""
+
+        try:
+            data = json.loads(raw)
+            return data["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, json.JSONDecodeError) as exc:
+            self.queue.put(f"AI RESPONSE PARSE ERROR -> {exc}")
+            return ""
+
+    def _fallback_ai(self, mode):
+        if mode == "admin":
+            ideas = [
+                "Instant Incident Review: summarize the last 15 minutes of joins, kicks, and warnings so admins can respond faster.",
+                "Respect Radar: detect repeat offenders by matching names and join patterns to recent moderation actions.",
+                "Quiet Hours Automations: auto-announce reduced volume rules and enforce stricter caps during late hours.",
+                "Mentor Match: pair trusted users with newcomers based on shared interests to improve onboarding.",
+                "Rapid Context Cards: one-click macros that explain rules with a short, calm, and consistent tone.",
+            ]
+            return "\n".join(f"- {idea}" for idea in ideas)
+
+        snippets = [
+            [
+                "def summarize_recent(log_lines, max_items=5):",
+                "    summary = []",
+                "    for line in log_lines[-max_items:]:",
+                "        summary.append(line.split('] ', 1)[-1])",
+                "    return '\\n'.join(summary)",
+            ],
+            [
+                "def should_warn_user(message, banned_words):",
+                "    lowered = message.lower()",
+                "    return any(word in lowered for word in banned_words)",
+            ],
+            [
+                "def format_admin_alert(username, action):",
+                "    return f\"[ADMIN ALERT] {username} -> {action}\"",
+            ],
+        ]
+        snippet = random.choice(snippets)
+        return "```python\n" + "\n".join(snippet) + "\n```"
+
+    def _detect_amd_gpu(self):
+        return any(
+            os.path.exists(path)
+            for path in ("/sys/module/amdgpu", "/opt/rocm", "/dev/kfd")
+        )
+
+    @staticmethod
+    def _parse_float(value, fallback):
+        try:
+            return float(value)
+        except ValueError:
+            return fallback
+
+    @staticmethod
+    def _parse_int(value, fallback):
+        try:
+            return int(value)
+        except ValueError:
+            return fallback
 
     # ---------------- Logging ----------------
 
