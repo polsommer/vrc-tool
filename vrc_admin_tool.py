@@ -33,9 +33,11 @@ class AdminToolApp:
         self.users: set[str] = set()
         self.server: osc_server.ThreadingOSCUDPServer | None = None
         self.server_thread: threading.Thread | None = None
+        self.last_check_var = tk.StringVar(value="Last check: not yet run")
 
         self._build_ui()
         self._schedule_queue_poll()
+        self._schedule_admin_checks()
 
     def _build_ui(self) -> None:
         self.root.geometry("900x600")
@@ -88,6 +90,21 @@ class AdminToolApp:
 
         settings.columnconfigure(7, weight=1)
 
+        admin_box = ttk.LabelFrame(main, text="VRChat Admin Box", padding=10)
+        admin_box.pack(fill=tk.X, pady=(12, 0))
+        ttk.Label(
+            admin_box,
+            text=(
+                "Admin Mode Online: monitoring lobby activity, keeping logs, "
+                "and running scheduled safety checks."
+            ),
+            wraplength=780,
+            foreground="#4a5568",
+        ).pack(anchor=tk.W)
+        ttk.Label(admin_box, textvariable=self.last_check_var).pack(
+            anchor=tk.W, pady=(6, 0)
+        )
+
         body = ttk.Frame(main)
         body.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
 
@@ -125,6 +142,16 @@ class AdminToolApp:
     def _schedule_queue_poll(self) -> None:
         self._process_queue()
         self.root.after(200, self._schedule_queue_poll)
+
+    def _schedule_admin_checks(self) -> None:
+        self._run_admin_check()
+        self.root.after(60_000, self._schedule_admin_checks)
+
+    def _run_admin_check(self) -> None:
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.last_check_var.set(f"Last check: {timestamp}")
+        self.event_queue.put("Admin check: running scheduled scan")
+        self.scan_users()
 
     def _process_queue(self) -> None:
         while not self.event_queue.empty():
