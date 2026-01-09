@@ -15,7 +15,14 @@ import net.dv8tion.jda.api.utils.MemberCachePolicy;
 
 public final class BotLauncher {
     public static void main(String[] args) throws InterruptedException {
-        BotConfig config = BotConfig.fromEnvironment();
+        BotConfig config;
+        try {
+            config = BotConfig.fromEnvironment();
+        } catch (IllegalStateException error) {
+            System.err.println("Bot configuration error: " + error.getMessage());
+            System.err.println("Set DISCORD_TOKEN and any required IDs before launching the bot.");
+            return;
+        }
         FaqService faqService = new FaqService("/faq.json");
         TemplateService templateService = new TemplateService(config);
         ModerationScanService scanService = new ModerationScanService(config);
