@@ -2,7 +2,7 @@ package com.vrctool.bot.listener;
 
 import com.vrctool.bot.config.BotConfig;
 import com.vrctool.bot.service.TemplateService;
-import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
+import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
 import net.dv8tion.jda.api.events.guild.member.GuildMemberJoinEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 
@@ -20,7 +20,10 @@ public class MemberJoinListener extends ListenerAdapter {
         if (config.welcomeChannelId() == null) {
             return;
         }
-        MessageChannel channel = event.getGuild().getChannelById(MessageChannel.class, config.welcomeChannelId());
+        GuildMessageChannel channel = event.getGuild().getChannelById(
+                GuildMessageChannel.class,
+                config.welcomeChannelId()
+        );
         if (channel == null) {
             return;
         }
