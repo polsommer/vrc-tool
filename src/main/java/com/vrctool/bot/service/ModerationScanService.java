@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.entities.Member;
@@ -19,18 +20,20 @@ import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 
 public class ModerationScanService {
+    private record KeywordPattern(String keyword, Pattern pattern) {}
+
     private final BotConfig config;
     private final ScheduledExecutorService scheduler;
     private final Map<String, String> lastMessageIds;
-    private final List<String> keywords;
+    private final List<KeywordPattern> keywordPatterns;
 
     public ModerationScanService(BotConfig config) {
         this.config = config;
         int threadCount = Math.max(2, config.scanChannelIds().size());
         this.scheduler = Executors.newScheduledThreadPool(threadCount);
         this.lastMessageIds = new ConcurrentHashMap<>();
-        this.keywords = config.scanKeywords().stream()
-                .map(keyword -> keyword.toLowerCase(Locale.ROOT))
+        this.keywordPatterns = config.scanKeywords().stream()
+                .map(keyword -> new KeywordPattern(keyword, compilePattern(keyword)))
                 .toList();
     }
 
@@ -72,9 +75,9 @@ public class ModerationScanService {
                         return;
                     }
                     String content = message.getContentDisplay().toLowerCase(Locale.ROOT);
-                    for (String keyword : keywords) {
-                        if (content.contains(keyword)) {
-                            logFlag(channel, message, keyword);
+                    for (KeywordPattern keywordPattern : keywordPatterns) {
+                        if (keywordPattern.pattern().matcher(content).find()) {
+                            logFlag(channel, message, keywordPattern.keyword());
                             break;
                         }
                     }
@@ -106,5 +109,41 @@ public class ModerationScanService {
                 .setTimestamp(Instant.now())
                 .setColor(0xF97316);
         modChannel.sendMessageEmbeds(builder.build()).queue();
+    }
+
+    private static Pattern compilePattern(String term) {
+        String trimmed = term == null ? "" : term.trim();
+        if (trimmed.isEmpty()) {
+            return Pattern.compile("$a");
+        }
+        StringBuilder regex = new StringBuilder();
+        regex.append("(?<!\\p{Alnum})");
+        boolean pendingSpace = false;
+        for (char rawChar : trimmed.toCharArray()) {
+            if (Character.isWhitespace(rawChar)) {
+                pendingSpace = true;
+                continue;
+            }
+            if (pendingSpace) {
+                regex.append("\\s+");
+                pendingSpace = false;
+            }
+            String obfuscated = obfuscationPattern(rawChar);
+            if (obfuscated != null) {
+                regex.append(obfuscated);
+            } else {
+                regex.append(Pattern.quote(String.valueOf(rawChar)));
+            }
+        }
+        regex.append("(?!\\p{Alnum})");
+        return Pattern.compile(regex.toString(), Pattern.CASE_INSENSITIVE);
+    }
+
+    private static String obfuscationPattern(char value) {
+        return switch (Character.toLowerCase(value)) {
+            case 'a' -> "[a@]";
+            case 'o' -> "[o0]";
+            default -> null;
+        };
     }
 }
