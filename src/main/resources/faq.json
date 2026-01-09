@@ -1,0 +1,17 @@
+[
+  {
+    "topic": "avatar",
+    "title": "Avatar rules",
+    "description": "Please keep avatars under 70k polygons, no audio spam, and keep shaders VRChat safe for our events."
+  },
+  {
+    "topic": "events",
+    "title": "Weekly events",
+    "description": "We host raid nights on Fridays and chill lobbies on Sundays. Use /event-create to announce community events."
+  },
+  {
+    "topic": "moderation",
+    "title": "Moderation",
+    "description": "Respect others, no harassment, and follow Discord + VRChat ToS. Staff can step in if needed."
+  }
+]
