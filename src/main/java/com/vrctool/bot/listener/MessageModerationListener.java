@@ -1,6 +1,7 @@
 package com.vrctool.bot.listener;
 
 import com.vrctool.bot.config.BotConfig;
+import com.vrctool.bot.util.ModerationPatterns;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -23,7 +24,7 @@ public class MessageModerationListener extends ListenerAdapter {
         this.config = config;
         this.blockedPatterns = compilePatterns(config.blockedPatterns());
         this.keywordPatterns = config.scanKeywords().stream()
-                .map(keyword -> new KeywordPattern(keyword, compilePattern(keyword)))
+                .map(keyword -> new KeywordPattern(keyword, ModerationPatterns.compileKeywordPattern(keyword)))
                 .toList();
     }
 
@@ -118,43 +119,7 @@ public class MessageModerationListener extends ListenerAdapter {
 
     private static List<Pattern> compilePatterns(List<String> terms) {
         return terms.stream()
-                .map(MessageModerationListener::compilePattern)
+                .map(ModerationPatterns::compileBlockedPattern)
                 .toList();
-    }
-
-    private static Pattern compilePattern(String term) {
-        String trimmed = term == null ? "" : term.trim();
-        if (trimmed.isEmpty()) {
-            return Pattern.compile("$a");
-        }
-        StringBuilder regex = new StringBuilder();
-        regex.append("(?<!\\p{Alnum})");
-        boolean pendingSpace = false;
-        for (char rawChar : trimmed.toCharArray()) {
-            if (Character.isWhitespace(rawChar)) {
-                pendingSpace = true;
-                continue;
-            }
-            if (pendingSpace) {
-                regex.append("\\s+");
-                pendingSpace = false;
-            }
-            String obfuscated = obfuscationPattern(rawChar);
-            if (obfuscated != null) {
-                regex.append(obfuscated);
-            } else {
-                regex.append(Pattern.quote(String.valueOf(rawChar)));
-            }
-        }
-        regex.append("(?!\\p{Alnum})");
-        return Pattern.compile(regex.toString(), Pattern.CASE_INSENSITIVE);
-    }
-
-    private static String obfuscationPattern(char value) {
-        return switch (Character.toLowerCase(value)) {
-            case 'a' -> "[a@]";
-            case 'o' -> "[o0]";
-            default -> null;
-        };
     }
 }
