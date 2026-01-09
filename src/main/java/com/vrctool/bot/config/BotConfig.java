@@ -110,14 +110,32 @@ public record BotConfig(
     private static List<String> defaultKeywords() {
         return List.of(
                 "harass",
+                "harassment",
                 "threat",
+                "threaten",
                 "dox",
                 "swat",
                 "leak",
+                "leaks",
+                "ip address",
+                "home address",
+                "phone number",
                 "hate",
                 "slur",
+                "racist",
+                "nazi",
                 "exploit",
-                "crash"
+                "crash",
+                "ddos",
+                "kys",
+                "kill yourself",
+                "kill urself",
+                "suicide bait",
+                "groom",
+                "groomer",
+                "pedo",
+                "rape",
+                "sexual assault"
         );
     }
 
