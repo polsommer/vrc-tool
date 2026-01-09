@@ -16,11 +16,12 @@ import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
-import net.dv8tion.jda.api.events.ReadyEvent;
+import net.dv8tion.jda.api.events.session.ReadyEvent;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
+import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.CommandData;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 
@@ -40,16 +41,17 @@ public class SlashCommandListener extends ListenerAdapter {
     @Override
     public void onReady(ReadyEvent event) {
         JDA jda = event.getJDA();
+        OptionData faqTopicOption = new OptionData(OptionType.STRING, "topic", "Topic keyword", true)
+                .addChoices(faqService.entries().stream()
+                        .map(entry -> new net.dv8tion.jda.api.interactions.commands.Command.Choice(
+                                entry.topic(), entry.topic()))
+                        .toList());
         List<CommandData> commands = List.of(
                 Commands.slash("ping", "Check bot latency."),
                 Commands.slash("about", "Learn about the VRC group assistant."),
                 Commands.slash("server-info", "Get stats about the server."),
                 Commands.slash("faq", "Read quick answers about the group.")
-                        .addOption(OptionType.STRING, "topic", "Topic keyword", true)
-                        .addChoices(faqService.entries().stream()
-                                .map(entry -> new net.dv8tion.jda.api.interactions.commands.Command.Choice(
-                                        entry.topic(), entry.topic()))
-                                .toList()),
+                        .addOptions(faqTopicOption),
                 Commands.slash("event-create", "Post a structured event announcement.")
                         .addOption(OptionType.STRING, "name", "Event name", true)
                         .addOption(OptionType.STRING, "time", "Time and timezone", true)
