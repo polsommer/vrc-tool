@@ -60,7 +60,8 @@ public class ModerationScanService {
             });
             return;
         }
-        channel.getHistoryAfter(lastId, 50).queue(messages -> {
+        channel.getHistoryAfter(lastId, 50).queue(history -> {
+            List<Message> messages = history.getRetrievedHistory();
             processMessages(channel, messages);
             updateLastId(channel, messages);
         });
