@@ -62,5 +62,7 @@ MOD_SCAN_INTERVAL_SECONDS=5 \
 * `/about` — Overview of bot features.
 * `/server-info` — Server stats snapshot.
 * `/faq topic:<topic>` — Quick answers for common questions.
+* `/faq-search question:<question>` — Smart FAQ matching for freeform questions.
 * `/event-create name:<name> time:<time> details:<details>` — Announce an event.
+* `/staff-alert message:<message>` — Send an alert to staff or the mod log (staff only).
 * `/purge amount:<1-100> channel:<optional>` — Bulk delete recent messages in a channel.
