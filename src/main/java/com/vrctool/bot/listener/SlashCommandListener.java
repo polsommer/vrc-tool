@@ -4,7 +4,6 @@ import com.vrctool.bot.config.BotConfig;
 import com.vrctool.bot.service.FaqEntry;
 import com.vrctool.bot.service.FaqService;
 import com.vrctool.bot.service.TemplateService;
-import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Objects;
@@ -123,7 +122,7 @@ public class SlashCommandListener extends ListenerAdapter {
         if (config.eventPingRoleId() != null) {
             event.getHook().sendMessage("<@&" + config.eventPingRoleId() + "> event posted!")
                     .setEphemeral(false)
-                    .queue(message -> message.delete().queueAfter(Duration.ofSeconds(10)));
+                    .queue(message -> message.delete().queueAfter(10, java.util.concurrent.TimeUnit.SECONDS));
         }
     }
 
