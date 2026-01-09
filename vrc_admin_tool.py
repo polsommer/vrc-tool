@@ -532,7 +532,8 @@ class VrcAdminTool:
             action, reason, confidence = ("allow", "No issues detected", 0.4)
 
         if action not in MOD_ACTIONS:
-            action = "allow"
+            action = "warn"
+            confidence = 0.2
 
         self._append_ai_mod_memory(user, text, action, confidence)
 
@@ -581,21 +582,44 @@ class VrcAdminTool:
         return (action, reason, confidence)
 
     def _parse_ai_moderation_response(self, response):
+        default_action = "warn"
+        default_reason = "Invalid AI moderation response"
+        default_confidence = 0.2
         if not response:
-            return ("allow", "No AI response", 0.3)
+            self.queue.put("AI MODERATION PARSE FAILED -> Empty AI response.")
+            return (default_action, default_reason, default_confidence)
         try:
             data = json.loads(response)
         except json.JSONDecodeError:
-            action = "allow"
-            reason = response.strip().splitlines()[0][:120]
-            return (action, reason or "Unstructured AI output", 0.35)
-        action = str(data.get("action", "allow")).lower()
-        reason = str(data.get("reason", "AI review")).strip()
-        confidence = data.get("confidence", 0.5)
+            snippet = response.strip().splitlines()[0][:120] if response.strip() else ""
+            self.queue.put(f"AI MODERATION PARSE FAILED -> Non-JSON output: {snippet}")
+            return (default_action, default_reason, default_confidence)
+        if not isinstance(data, dict):
+            self.queue.put("AI MODERATION PARSE FAILED -> JSON response was not an object.")
+            return (default_action, default_reason, default_confidence)
+        expected_keys = {"action", "reason", "confidence"}
+        if set(data.keys()) != expected_keys:
+            self.queue.put(
+                "AI MODERATION PARSE FAILED -> JSON schema mismatch (expected only action, reason, confidence)."
+            )
+            return (default_action, default_reason, default_confidence)
+        action = str(data.get("action", "")).lower()
+        reason = str(data.get("reason", "")).strip()
+        confidence = data.get("confidence", default_confidence)
         try:
             confidence = float(confidence)
         except (TypeError, ValueError):
-            confidence = 0.5
+            confidence = default_confidence
+        if action not in MOD_ACTIONS:
+            self.queue.put(f"AI MODERATION PARSE FAILED -> Invalid action: {action}")
+            return (default_action, default_reason, default_confidence)
+        if not (0.0 <= confidence <= 1.0):
+            self.queue.put(
+                f"AI MODERATION PARSE FAILED -> Confidence out of range: {confidence}"
+            )
+            return (default_action, default_reason, default_confidence)
+        if not reason:
+            reason = "AI review"
         return (action, reason, confidence)
 
     def _extract_chat_messages(self, line):
