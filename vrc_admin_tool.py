@@ -9,6 +9,7 @@ import tkinter as tk
 import urllib.error
 import urllib.request
 import urllib.parse
+from collections import deque
 from tkinter import ttk
 from pythonosc import dispatcher, osc_server, udp_client
 
@@ -50,8 +51,25 @@ AI_TIMEOUT_SECONDS = 20
 AI_MEMORY_FILE = "ai_memory.jsonl"
 AI_MEMORY_MAX_ITEMS = 12
 
+MOD_DEFAULT_KEYWORDS = [
+    "dox",
+    "swat",
+    "doxx",
+    "leak",
+    "threat",
+    "harass",
+    "slur",
+    "nazi",
+]
+MOD_ACTIONS = {"allow", "warn", "remove", "escalate"}
+
 PLAYER_JOIN_RE = re.compile(r"OnPlayerJoined\s+(.+)$")
 PLAYER_LEFT_RE = re.compile(r"OnPlayerLeft\s+(.+)$")
+CHAT_MESSAGE_RES = [
+    re.compile(r"OnPlayerChat(?:Message)?\s+([^:]+):\s*(.+)$", re.IGNORECASE),
+    re.compile(r"\[Chat\]\s+([^:]+):\s*(.+)$", re.IGNORECASE),
+    re.compile(r"ChatMessage\s+from\s+(.+?):\s*(.+)$", re.IGNORECASE),
+]
 
 # ---------------------------------------
 
@@ -73,6 +91,12 @@ class VrcAdminTool:
         self.announce_index = 0
         self.ai_busy = False
         self.active_players = []
+        self.mod_running = False
+        self.mod_file_pos = 0
+        self.mod_current_log = ""
+        self.mod_queue = queue.Queue()
+        self.mod_worker = None
+        self.mod_recent_messages = deque(maxlen=8)
 
         self._build_ui()
         self._poll_queue()
@@ -147,6 +171,52 @@ class VrcAdminTool:
 
         self.player_list = tk.Listbox(players_box, height=6)
         self.player_list.pack(fill=tk.BOTH, expand=True)
+
+        # Live Moderation
+        mod_box = ttk.LabelFrame(main, text="Live Chat Moderation", padding=10)
+        mod_box.pack(fill=tk.X, pady=10)
+
+        self.mod_status = tk.StringVar(value="Idle")
+        ttk.Label(mod_box, textvariable=self.mod_status).pack(anchor=tk.W)
+
+        self.mod_enabled_var = tk.BooleanVar(value=False)
+        self.mod_ai_var = tk.BooleanVar(value=True)
+        self.mod_post_alert_var = tk.BooleanVar(value=False)
+        self.mod_interval_var = tk.StringVar(value="2")
+        self.mod_keywords_var = tk.StringVar(value=", ".join(MOD_DEFAULT_KEYWORDS))
+
+        mod_controls = ttk.Frame(mod_box)
+        mod_controls.pack(fill=tk.X, pady=6)
+        ttk.Checkbutton(
+            mod_controls,
+            text="Enable live moderation monitor",
+            variable=self.mod_enabled_var,
+            command=self.toggle_moderation_monitor,
+        ).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            mod_controls,
+            text="Use AI for context + tangent detection",
+            variable=self.mod_ai_var,
+        ).pack(side=tk.LEFT, padx=6)
+        ttk.Checkbutton(
+            mod_controls,
+            text="Post alerts to chatbox",
+            variable=self.mod_post_alert_var,
+        ).pack(side=tk.LEFT)
+
+        mod_settings = ttk.Frame(mod_box)
+        mod_settings.pack(fill=tk.X, pady=4)
+        ttk.Label(mod_settings, text="Poll Interval (sec)").grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(mod_settings, textvariable=self.mod_interval_var, width=6).grid(
+            row=0, column=1, sticky=tk.W, padx=(6, 12)
+        )
+        ttk.Label(mod_settings, text="Flag keywords (comma-separated)").grid(
+            row=0, column=2, sticky=tk.W
+        )
+        ttk.Entry(mod_settings, textvariable=self.mod_keywords_var).grid(
+            row=0, column=3, sticky=tk.EW, padx=(6, 0)
+        )
+        mod_settings.columnconfigure(3, weight=1)
 
         # AI Assistant
         ai_box = ttk.LabelFrame(main, text="AI Assistant (Ideas + Code)", padding=10)
@@ -266,6 +336,8 @@ class VrcAdminTool:
         self.log_event("Admin system started")
 
         self.root.after(ANNOUNCE_INTERVAL * 1000, self.announcement_cycle)
+        if self.mod_enabled_var.get():
+            self._start_moderation_monitor()
 
     def stop(self):
         if not self.running:
@@ -279,6 +351,7 @@ class VrcAdminTool:
 
         self.status.set("Stopped")
         self.log_event("Admin system stopped")
+        self._stop_moderation_monitor()
 
     # ---------------- Functions ----------------
 
@@ -350,6 +423,183 @@ class VrcAdminTool:
     def on_osc(self, addr, *args):
         payload = ", ".join(str(a) for a in args) if args else "-"
         self.queue.put(f"OSC {addr} -> {payload}")
+
+    # ---------------- Live Moderation ----------------
+
+    def toggle_moderation_monitor(self):
+        if self.mod_enabled_var.get():
+            self._start_moderation_monitor()
+        else:
+            self._stop_moderation_monitor()
+
+    def _start_moderation_monitor(self):
+        if self.mod_running:
+            return
+        log_path = self._resolve_log_path()
+        if not log_path:
+            self.mod_status.set("No VRChat log detected")
+            self.log_event("MODERATION MONITOR -> VRChat log not found.")
+            return
+        self.mod_running = True
+        self.mod_current_log = log_path
+        self.mod_file_pos = os.path.getsize(log_path)
+        self.mod_status.set("Monitoring chat")
+        self.log_event(f"MODERATION MONITOR STARTED -> {log_path}")
+        if not self.mod_worker or not self.mod_worker.is_alive():
+            self.mod_worker = threading.Thread(
+                target=self._moderation_worker,
+                daemon=True,
+            )
+            self.mod_worker.start()
+        self._schedule_moderation_poll()
+
+    def _stop_moderation_monitor(self):
+        if not self.mod_running:
+            return
+        self.mod_running = False
+        self.mod_status.set("Idle")
+        self.log_event("MODERATION MONITOR STOPPED")
+
+    def _schedule_moderation_poll(self):
+        if not self.mod_running:
+            return
+        interval = max(1, self._parse_int(self.mod_interval_var.get(), 2))
+        self.root.after(interval * 1000, self._poll_chat_log)
+
+    def _poll_chat_log(self):
+        if not self.mod_running:
+            return
+        log_path = self._resolve_log_path()
+        if not log_path:
+            self.mod_status.set("Waiting for log")
+            self._schedule_moderation_poll()
+            return
+        if log_path != self.mod_current_log:
+            self.mod_current_log = log_path
+            self.mod_file_pos = os.path.getsize(log_path)
+            self.log_event(f"MODERATION MONITOR -> Switched log to {log_path}")
+
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as handle:
+                handle.seek(self.mod_file_pos)
+                lines = handle.readlines()
+                self.mod_file_pos = handle.tell()
+        except OSError as exc:
+            self.log_event(f"MODERATION MONITOR READ ERROR -> {exc}")
+            self._schedule_moderation_poll()
+            return
+
+        for line in lines:
+            for message in self._extract_chat_messages(line):
+                self._queue_moderation_review(message)
+
+        self._schedule_moderation_poll()
+
+    def _queue_moderation_review(self, message):
+        if not message:
+            return
+        self.mod_queue.put(message)
+
+    def _moderation_worker(self):
+        while True:
+            payload = self.mod_queue.get()
+            if payload is None:
+                return
+            self._process_moderation_message(payload)
+
+    def _process_moderation_message(self, payload):
+        user = payload["user"]
+        text = payload["text"]
+        self.mod_recent_messages.append(f"{user}: {text}")
+        keyword_hit = self._detect_keyword_hit(text)
+        if keyword_hit:
+            action = "escalate"
+            reason = f"Keyword match: {keyword_hit}"
+            confidence = 0.8
+        elif self.mod_ai_var.get():
+            action, reason, confidence = self._ai_moderation_review(user, text)
+        else:
+            action, reason, confidence = ("allow", "No issues detected", 0.4)
+
+        if action not in MOD_ACTIONS:
+            action = "allow"
+
+        if action != "allow":
+            alert = (
+                f"MOD ALERT -> {user}: {action.upper()} "
+                f"(confidence {confidence:.2f}) Reason: {reason}"
+            )
+            self.queue.put(alert)
+            if self.mod_post_alert_var.get():
+                self.send_chatbox(f"[MOD ALERT] {user} -> {action}: {reason}")
+
+    def _detect_keyword_hit(self, text):
+        keywords = [word.strip().lower() for word in self.mod_keywords_var.get().split(",")]
+        lowered = text.lower()
+        for word in keywords:
+            if word and word in lowered:
+                return word
+        return ""
+
+    def _ai_moderation_review(self, user, text):
+        endpoint = self.ai_endpoint_var.get().strip()
+        model = self.ai_model_var.get().strip()
+        if not endpoint or not model:
+            return ("allow", "AI not configured", 0.3)
+        if self.ai_local_only_var.get() and not self._is_local_endpoint(endpoint):
+            self.queue.put("AI MODERATION BLOCKED -> Non-local endpoint with local-only enabled.")
+            return ("allow", "AI blocked by local-only setting", 0.3)
+
+        context = "\n".join(self.mod_recent_messages)
+        prompt = (
+            "You are a VRChat moderation assistant. Review the latest chat message and context. "
+            "Decide if it is safe, needs a warning, should be removed, or should be escalated "
+            "to a moderator for advice. Return JSON only with keys: action (allow|warn|remove|escalate), "
+            "reason (short), confidence (0-1).\n\n"
+            f"Recent context:\n{context}\n\n"
+            f"New message:\n{user}: {text}"
+        )
+        response = self._request_ai_completion(endpoint, model, prompt)
+        action, reason, confidence = self._parse_ai_moderation_response(response)
+        return (action, reason, confidence)
+
+    def _parse_ai_moderation_response(self, response):
+        if not response:
+            return ("allow", "No AI response", 0.3)
+        try:
+            data = json.loads(response)
+        except json.JSONDecodeError:
+            action = "allow"
+            reason = response.strip().splitlines()[0][:120]
+            return (action, reason or "Unstructured AI output", 0.35)
+        action = str(data.get("action", "allow")).lower()
+        reason = str(data.get("reason", "AI review")).strip()
+        confidence = data.get("confidence", 0.5)
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0.5
+        return (action, reason, confidence)
+
+    def _extract_chat_messages(self, line):
+        for regex in CHAT_MESSAGE_RES:
+            match = regex.search(line)
+            if match:
+                user = match.group(1).strip()
+                text = match.group(2).strip()
+                if user and text:
+                    return [{"user": user, "text": text}]
+        return []
+
+    def _resolve_log_path(self):
+        log_path = self.log_path_var.get().strip()
+        if not log_path:
+            log_path = self._find_latest_vrchat_log()
+            if log_path:
+                self.log_path_var.set(log_path)
+        if log_path and os.path.exists(log_path):
+            return log_path
+        return ""
 
     # ---------------- AI Assistant ----------------
 
