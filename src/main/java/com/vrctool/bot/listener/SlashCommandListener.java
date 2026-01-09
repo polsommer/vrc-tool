@@ -15,6 +15,7 @@ import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
+import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.events.session.ReadyEvent;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
@@ -51,10 +52,14 @@ public class SlashCommandListener extends ListenerAdapter {
                 Commands.slash("server-info", "Get stats about the server."),
                 Commands.slash("faq", "Read quick answers about the group.")
                         .addOptions(faqTopicOption),
+                Commands.slash("faq-search", "Ask a question and get the closest FAQ match.")
+                        .addOption(OptionType.STRING, "question", "What do you need help with?", true),
                 Commands.slash("event-create", "Post a structured event announcement.")
                         .addOption(OptionType.STRING, "name", "Event name", true)
                         .addOption(OptionType.STRING, "time", "Time and timezone", true)
                         .addOption(OptionType.STRING, "details", "Details about the event", true),
+                Commands.slash("staff-alert", "Send an alert to staff or the mod log.")
+                        .addOption(OptionType.STRING, "message", "Alert details for the staff team", true),
                 Commands.slash("purge", "Remove a batch of recent messages.")
                         .addOption(OptionType.INTEGER, "amount", "How many messages to delete (1-100)", true)
                         .addOption(OptionType.CHANNEL, "channel", "Target channel (defaults to current)", false)
@@ -77,7 +82,9 @@ public class SlashCommandListener extends ListenerAdapter {
             case "about" -> event.replyEmbeds(templateService.buildAboutEmbed()).queue();
             case "server-info" -> handleServerInfo(event);
             case "faq" -> handleFaq(event);
+            case "faq-search" -> handleFaqSearch(event);
             case "event-create" -> handleEventCreate(event);
+            case "staff-alert" -> handleStaffAlert(event);
             case "purge" -> handlePurge(event);
             default -> event.reply("Unknown command.").setEphemeral(true).queue();
         }
@@ -104,6 +111,25 @@ public class SlashCommandListener extends ListenerAdapter {
         faqService.findByTopic(topic)
                 .ifPresentOrElse(entry -> event.replyEmbeds(buildFaqEmbed(entry)).queue(),
                         () -> event.reply("I don't recognize that topic yet.").setEphemeral(true).queue());
+    }
+
+    private void handleFaqSearch(SlashCommandInteractionEvent event) {
+        String question = Objects.requireNonNull(event.getOption("question")).getAsString();
+        faqService.findBestMatch(question).ifPresentOrElse(entry -> {
+            EmbedBuilder builder = new EmbedBuilder()
+                    .setTitle("Best FAQ match: " + entry.title())
+                    .setDescription(entry.description())
+                    .setColor(0x00C2FF);
+            List<String> suggestions = faqService.suggestTopics(question, 3);
+            if (!suggestions.isEmpty()) {
+                builder.addField("Related topics", suggestions.stream()
+                        .map(topic -> "• " + topic)
+                        .collect(Collectors.joining("\n")), false);
+            }
+            event.replyEmbeds(builder.build()).queue();
+        }, () -> event.reply("I couldn't find a close FAQ match. Try a different phrasing.")
+                .setEphemeral(true)
+                .queue());
     }
 
     private void handleEventCreate(SlashCommandInteractionEvent event) {
@@ -157,6 +183,39 @@ public class SlashCommandListener extends ListenerAdapter {
                     .setEphemeral(true)
                     .queue();
         });
+    }
+
+    private void handleStaffAlert(SlashCommandInteractionEvent event) {
+        Member member = event.getMember();
+        if (member == null) {
+            event.reply("Unable to identify requestor.").setEphemeral(true).queue();
+            return;
+        }
+        if (!isStaff(member)) {
+            event.reply("You do not have permission to use this command.").setEphemeral(true).queue();
+            return;
+        }
+        String message = Objects.requireNonNull(event.getOption("message")).getAsString();
+        String staffMention = config.staffRoleId() == null ? "Staff" : "<@&" + config.staffRoleId() + ">";
+        EmbedBuilder builder = new EmbedBuilder()
+                .setTitle("Staff alert")
+                .setDescription(message)
+                .addField("Requested by", member.getAsMention(), true)
+                .setTimestamp(OffsetDateTime.now())
+                .setColor(0xFACC15);
+
+        MessageChannel targetChannel = config.modLogChannelId() == null
+                ? event.getChannel()
+                : event.getJDA().getChannelById(MessageChannel.class, config.modLogChannelId());
+        if (targetChannel != null) {
+            targetChannel.sendMessage(staffMention)
+                    .queue(post -> post.delete().queueAfter(5, java.util.concurrent.TimeUnit.SECONDS));
+            targetChannel.sendMessageEmbeds(builder.build()).queue();
+        }
+
+        event.replyEmbeds(builder.build())
+                .setEphemeral(true)
+                .queue();
     }
 
     private GuildMessageChannel resolveChannel(SlashCommandInteractionEvent event) {

@@ -26,7 +26,8 @@ public class ModerationScanService {
 
     public ModerationScanService(BotConfig config) {
         this.config = config;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor();
+        int threadCount = Math.max(2, config.scanChannelIds().size());
+        this.scheduler = Executors.newScheduledThreadPool(threadCount);
         this.lastMessageIds = new ConcurrentHashMap<>();
         this.keywords = config.scanKeywords().stream()
                 .map(keyword -> keyword.toLowerCase(Locale.ROOT))
@@ -38,20 +39,16 @@ public class ModerationScanService {
             return;
         }
         long interval = config.scanInterval().toSeconds();
-        scheduler.scheduleAtFixedRate(() -> scan(jda), interval, interval, TimeUnit.SECONDS);
-    }
-
-    private void scan(JDA jda) {
         for (String channelId : config.scanChannelIds()) {
-            GuildMessageChannel channel = jda.getChannelById(GuildMessageChannel.class, channelId);
-            if (channel == null) {
-                continue;
-            }
-            scanChannel(channel);
+            scheduler.scheduleAtFixedRate(() -> scanChannel(jda, channelId), interval, interval, TimeUnit.SECONDS);
         }
     }
 
-    private void scanChannel(GuildMessageChannel channel) {
+    private void scanChannel(JDA jda, String channelId) {
+        GuildMessageChannel channel = jda.getChannelById(GuildMessageChannel.class, channelId);
+        if (channel == null) {
+            return;
+        }
         String lastId = lastMessageIds.get(channel.getId());
         if (lastId == null) {
             channel.getHistory().retrievePast(20).queue(messages -> {
