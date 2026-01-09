@@ -41,7 +41,10 @@ public record BotConfig(
 
     private static String getRequiredEnv(String key) {
         String value = System.getenv(key);
-        return Objects.requireNonNull(value, key + " must be set in the environment");
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException(key + " must be set in the environment");
+        }
+        return value;
     }
 
     private static List<String> parseList(String value) {
