@@ -50,6 +50,10 @@ AI_DEFAULT_MODEL = "llama3.1"
 AI_TIMEOUT_SECONDS = 20
 AI_MEMORY_FILE = "ai_memory.jsonl"
 AI_MEMORY_MAX_ITEMS = 12
+AI_MEMORY_MAX_BYTES = 200_000
+AI_MOD_MEMORY_FILE = "ai_mod_memory.jsonl"
+AI_MOD_MEMORY_MAX_ITEMS = 30
+AI_MOD_MEMORY_MAX_BYTES = 200_000
 
 MOD_DEFAULT_KEYWORDS = [
     "dox",
@@ -182,6 +186,7 @@ class VrcAdminTool:
         self.mod_enabled_var = tk.BooleanVar(value=False)
         self.mod_ai_var = tk.BooleanVar(value=True)
         self.mod_post_alert_var = tk.BooleanVar(value=False)
+        self.mod_memory_var = tk.BooleanVar(value=True)
         self.mod_interval_var = tk.StringVar(value="2")
         self.mod_keywords_var = tk.StringVar(value=", ".join(MOD_DEFAULT_KEYWORDS))
 
@@ -203,6 +208,11 @@ class VrcAdminTool:
             text="Post alerts to chatbox",
             variable=self.mod_post_alert_var,
         ).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            mod_controls,
+            text="Use moderation memory",
+            variable=self.mod_memory_var,
+        ).pack(side=tk.LEFT, padx=6)
 
         mod_settings = ttk.Frame(mod_box)
         mod_settings.pack(fill=tk.X, pady=4)
@@ -524,6 +534,8 @@ class VrcAdminTool:
         if action not in MOD_ACTIONS:
             action = "allow"
 
+        self._append_ai_mod_memory(user, text, action, confidence)
+
         if action != "allow":
             alert = (
                 f"MOD ALERT -> {user}: {action.upper()} "
@@ -551,12 +563,17 @@ class VrcAdminTool:
             return ("allow", "AI blocked by local-only setting", 0.3)
 
         context = "\n".join(self.mod_recent_messages)
+        memory_block = ""
+        if self.mod_memory_var.get():
+            memory = self._load_ai_mod_memory()
+            if memory:
+                memory_block = f"\n\nRecent moderation memory:\n{memory}"
         prompt = (
             "You are a VRChat moderation assistant. Review the latest chat message and context. "
             "Decide if it is safe, needs a warning, should be removed, or should be escalated "
             "to a moderator for advice. Return JSON only with keys: action (allow|warn|remove|escalate), "
             "reason (short), confidence (0-1).\n\n"
-            f"Recent context:\n{context}\n\n"
+            f"Recent context:\n{context}{memory_block}\n\n"
             f"New message:\n{user}: {text}"
         )
         response = self._request_ai_completion(endpoint, model, prompt)
@@ -766,11 +783,58 @@ class VrcAdminTool:
             "mode": mode,
             "output": output.strip(),
         }
+        self._append_jsonl_memory(
+            AI_MEMORY_FILE,
+            record,
+            AI_MEMORY_MAX_ITEMS,
+            AI_MEMORY_MAX_BYTES,
+            "AI MEMORY WRITE FAILED",
+        )
+
+    def _append_ai_mod_memory(self, user, text, action, confidence):
+        if not self.mod_memory_var.get():
+            return
+        record = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "user": user,
+            "text": text,
+            "action": action,
+            "confidence": confidence,
+        }
+        self._append_jsonl_memory(
+            AI_MOD_MEMORY_FILE,
+            record,
+            AI_MOD_MEMORY_MAX_ITEMS,
+            AI_MOD_MEMORY_MAX_BYTES,
+            "AI MOD MEMORY WRITE FAILED",
+        )
+
+    def _append_jsonl_memory(self, path, record, max_items, max_bytes, error_prefix):
+        if not record:
+            return
+        line = json.dumps(record) + "\n"
+        lines = []
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    lines = handle.readlines()
+            except OSError as exc:
+                self.queue.put(f"{error_prefix} -> {exc}")
+                return
+        lines.append(line)
+        lines = [entry for entry in lines if entry.strip()]
+        if max_items and len(lines) > max_items:
+            lines = lines[-max_items:]
+        if max_bytes:
+            def total_bytes(entries):
+                return sum(len(entry.encode("utf-8")) for entry in entries)
+            while len(lines) > 1 and total_bytes(lines) > max_bytes:
+                lines.pop(0)
         try:
-            with open(AI_MEMORY_FILE, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record) + "\n")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.writelines(lines)
         except OSError as exc:
-            self.queue.put(f"AI MEMORY WRITE FAILED -> {exc}")
+            self.queue.put(f"{error_prefix} -> {exc}")
 
     def _load_ai_memory(self):
         if not os.path.exists(AI_MEMORY_FILE):
@@ -791,6 +855,35 @@ class VrcAdminTool:
             output = data.get("output", "").strip()
             if output:
                 entries.append(f"- {mode}: {output}")
+        return "\n".join(entries)
+
+    def _load_ai_mod_memory(self):
+        if not os.path.exists(AI_MOD_MEMORY_FILE):
+            return ""
+        try:
+            with open(AI_MOD_MEMORY_FILE, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()[-AI_MOD_MEMORY_MAX_ITEMS:]
+        except OSError as exc:
+            self.queue.put(f"AI MOD MEMORY READ FAILED -> {exc}")
+            return ""
+        entries = []
+        for line in lines:
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            timestamp = data.get("timestamp", "unknown time")
+            user = data.get("user", "unknown user")
+            text = data.get("text", "").strip()
+            action = data.get("action", "allow")
+            confidence = data.get("confidence", 0.0)
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            entries.append(
+                f"- {timestamp} | {user} -> {action} ({confidence:.2f}): {text}"
+            )
         return "\n".join(entries)
 
     def _detect_amd_gpu(self):
