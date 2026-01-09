@@ -4,8 +4,6 @@ import io.github.cdimascio.dotenv.Dotenv;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
-import java.util.Objects;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -21,6 +19,7 @@ public record BotConfig(
         String supportLink,
         List<String> scanChannelIds,
         List<String> scanKeywords,
+        List<String> blockedPatterns,
         Duration scanInterval
 ) {
     private static final Pattern ENV_KEY_PATTERN = Pattern.compile("[A-Z0-9_]+");
@@ -41,6 +40,7 @@ public record BotConfig(
                 getOptionalEnv("SUPPORT_LINK"),
                 parseScanChannelIds(getOptionalEnv("MOD_SCAN_CHANNEL_IDS")),
                 parseListOrDefault(getOptionalEnv("MOD_SCAN_KEYWORDS"), defaultKeywords()),
+                parseListOrDefault(getOptionalEnv("MOD_BLOCKED_PATTERNS"), defaultBlockedPatterns()),
                 parseDurationSeconds(getOptionalEnv("MOD_SCAN_INTERVAL_SECONDS"), 5)
         );
     }
@@ -118,6 +118,15 @@ public record BotConfig(
                 "slur",
                 "exploit",
                 "crash"
+        );
+    }
+
+    private static List<String> defaultBlockedPatterns() {
+        return List.of(
+                "discord.gg",
+                "discord.com/invite",
+                "free nitro",
+                "steamgift"
         );
     }
 }

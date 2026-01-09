@@ -4,6 +4,7 @@ import com.vrctool.bot.config.BotConfig;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Message;
@@ -12,20 +13,17 @@ import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 
 public class MessageModerationListener extends ListenerAdapter {
-    private static final String[] BLOCKED_PATTERNS = {
-            "discord.gg",
-            "discord.com/invite",
-            "free nitro",
-            "steamgift"
-    };
+    private record KeywordPattern(String keyword, Pattern pattern) {}
 
     private final BotConfig config;
-    private final List<String> scanKeywords;
+    private final List<Pattern> blockedPatterns;
+    private final List<KeywordPattern> keywordPatterns;
 
     public MessageModerationListener(BotConfig config) {
         this.config = config;
-        this.scanKeywords = config.scanKeywords().stream()
-                .map(keyword -> keyword.toLowerCase(Locale.ROOT))
+        this.blockedPatterns = compilePatterns(config.blockedPatterns());
+        this.keywordPatterns = config.scanKeywords().stream()
+                .map(keyword -> new KeywordPattern(keyword, compilePattern(keyword)))
                 .toList();
     }
 
@@ -43,8 +41,8 @@ public class MessageModerationListener extends ListenerAdapter {
 
         String content = message.getContentDisplay().toLowerCase(Locale.ROOT);
         boolean blocked = false;
-        for (String pattern : BLOCKED_PATTERNS) {
-            if (content.contains(pattern)) {
+        for (Pattern pattern : blockedPatterns) {
+            if (pattern.matcher(content).find()) {
                 message.delete().queue();
                 message.getChannel().sendMessage(member.getAsMention() + " please avoid posting invite or scam links.")
                         .queue();
@@ -57,10 +55,10 @@ public class MessageModerationListener extends ListenerAdapter {
             return;
         }
 
-        for (String keyword : scanKeywords) {
-            if (content.contains(keyword)) {
-                warnKeyword(event.getChannel(), member, keyword);
-                logKeywordWarning(event.getChannel(), member, message.getContentDisplay(), keyword);
+        for (KeywordPattern keywordPattern : keywordPatterns) {
+            if (keywordPattern.pattern().matcher(content).find()) {
+                warnKeyword(event.getChannel(), member, keywordPattern.keyword());
+                logKeywordWarning(event.getChannel(), member, message.getContentDisplay(), keywordPattern.keyword());
                 break;
             }
         }
@@ -116,5 +114,47 @@ public class MessageModerationListener extends ListenerAdapter {
                 .setTimestamp(Instant.now())
                 .setColor(0xF97316);
         modChannel.sendMessageEmbeds(builder.build()).queue();
+    }
+
+    private static List<Pattern> compilePatterns(List<String> terms) {
+        return terms.stream()
+                .map(MessageModerationListener::compilePattern)
+                .toList();
+    }
+
+    private static Pattern compilePattern(String term) {
+        String trimmed = term == null ? "" : term.trim();
+        if (trimmed.isEmpty()) {
+            return Pattern.compile("$a");
+        }
+        StringBuilder regex = new StringBuilder();
+        regex.append("(?<!\\p{Alnum})");
+        boolean pendingSpace = false;
+        for (char rawChar : trimmed.toCharArray()) {
+            if (Character.isWhitespace(rawChar)) {
+                pendingSpace = true;
+                continue;
+            }
+            if (pendingSpace) {
+                regex.append("\\s+");
+                pendingSpace = false;
+            }
+            String obfuscated = obfuscationPattern(rawChar);
+            if (obfuscated != null) {
+                regex.append(obfuscated);
+            } else {
+                regex.append(Pattern.quote(String.valueOf(rawChar)));
+            }
+        }
+        regex.append("(?!\\p{Alnum})");
+        return Pattern.compile(regex.toString(), Pattern.CASE_INSENSITIVE);
+    }
+
+    private static String obfuscationPattern(char value) {
+        return switch (Character.toLowerCase(value)) {
+            case 'a' -> "[a@]";
+            case 'o' -> "[o0]";
+            default -> null;
+        };
     }
 }
