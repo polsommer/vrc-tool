@@ -5,6 +5,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public record BotConfig(
@@ -21,6 +22,8 @@ public record BotConfig(
         List<String> scanKeywords,
         Duration scanInterval
 ) {
+    private static final Pattern ENV_KEY_PATTERN = Pattern.compile("[A-Z0-9_]+");
+
     public static BotConfig fromEnvironment() {
         String token = getRequiredEnv("DISCORD_TOKEN");
         return new BotConfig(
@@ -42,7 +45,10 @@ public record BotConfig(
     private static String getRequiredEnv(String key) {
         String value = System.getenv(key);
         if (value == null || value.isBlank()) {
-            throw new IllegalStateException(key + " must be set in the environment");
+            String safeKey = ENV_KEY_PATTERN.matcher(key).matches()
+                    ? key
+                    : "required environment variable";
+            throw new IllegalStateException(safeKey + " must be set in the environment");
         }
         return value;
     }
