@@ -54,6 +54,11 @@ AI_MEMORY_MAX_BYTES = 200_000
 AI_MOD_MEMORY_FILE = "ai_mod_memory.jsonl"
 AI_MOD_MEMORY_MAX_ITEMS = 30
 AI_MOD_MEMORY_MAX_BYTES = 200_000
+MOD_LEARNED_KEYWORDS_FILE = "ai_mod_learned_keywords.json"
+MOD_LEARNED_KEYWORDS_MAX_ITEMS = 200
+MOD_LEARNED_KEYWORD_THRESHOLD = 2
+MOD_LEARNED_MIN_CONFIDENCE = 0.6
+MOD_LEARNED_MIN_WORD_LEN = 4
 
 MOD_DEFAULT_KEYWORDS = [
     "dox",
@@ -65,6 +70,57 @@ MOD_DEFAULT_KEYWORDS = [
     "slur",
     "nazi",
 ]
+MOD_LEARNED_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "allow",
+    "also",
+    "another",
+    "anyone",
+    "because",
+    "before",
+    "being",
+    "could",
+    "every",
+    "first",
+    "found",
+    "friend",
+    "going",
+    "hello",
+    "help",
+    "here",
+    "just",
+    "like",
+    "maybe",
+    "might",
+    "please",
+    "pretty",
+    "probably",
+    "really",
+    "right",
+    "safe",
+    "should",
+    "something",
+    "thanks",
+    "their",
+    "there",
+    "these",
+    "they",
+    "think",
+    "this",
+    "those",
+    "today",
+    "tomorrow",
+    "welcome",
+    "what",
+    "where",
+    "which",
+    "while",
+    "with",
+    "would",
+    "your",
+}
 MOD_ACTIONS = {"allow", "warn", "remove", "escalate"}
 
 PLAYER_JOIN_RE = re.compile(r"OnPlayerJoined\s+(.+)$")
@@ -101,8 +157,10 @@ class VrcAdminTool:
         self.mod_queue = queue.Queue()
         self.mod_worker = None
         self.mod_recent_messages = deque(maxlen=8)
+        self.mod_learned_keywords = self._load_learned_keywords()
 
         self._build_ui()
+        self._sync_keywords_with_learned()
         self._poll_queue()
 
     # ---------------- UI ----------------
@@ -187,6 +245,7 @@ class VrcAdminTool:
         self.mod_ai_var = tk.BooleanVar(value=True)
         self.mod_post_alert_var = tk.BooleanVar(value=False)
         self.mod_memory_var = tk.BooleanVar(value=True)
+        self.mod_learn_var = tk.BooleanVar(value=True)
         self.mod_interval_var = tk.StringVar(value="2")
         self.mod_keywords_var = tk.StringVar(value=", ".join(MOD_DEFAULT_KEYWORDS))
 
@@ -212,6 +271,11 @@ class VrcAdminTool:
             mod_controls,
             text="Use moderation memory",
             variable=self.mod_memory_var,
+        ).pack(side=tk.LEFT, padx=6)
+        ttk.Checkbutton(
+            mod_controls,
+            text="Learn new blocked keywords",
+            variable=self.mod_learn_var,
         ).pack(side=tk.LEFT, padx=6)
 
         mod_settings = ttk.Frame(mod_box)
@@ -536,6 +600,7 @@ class VrcAdminTool:
             confidence = 0.2
 
         self._append_ai_mod_memory(user, text, action, confidence)
+        self._learn_keywords_from_message(user, text, action, confidence)
 
         if action != "allow":
             alert = (
@@ -547,7 +612,7 @@ class VrcAdminTool:
                 self.send_chatbox(f"[MOD ALERT] {user} -> {action}: {reason}")
 
     def _detect_keyword_hit(self, text):
-        keywords = [word.strip().lower() for word in self.mod_keywords_var.get().split(",")]
+        keywords = self._get_all_keywords()
         lowered = text.lower()
         for word in keywords:
             if word and word in lowered:
@@ -832,6 +897,108 @@ class VrcAdminTool:
             AI_MOD_MEMORY_MAX_BYTES,
             "AI MOD MEMORY WRITE FAILED",
         )
+
+    def _get_all_keywords(self):
+        keywords = [
+            word.strip().lower()
+            for word in self.mod_keywords_var.get().split(",")
+            if word.strip()
+        ]
+        learned = [word for word, count in self.mod_learned_keywords.items() if count > 0]
+        merged = list(dict.fromkeys(keywords + learned))
+        return merged
+
+    def _sync_keywords_with_learned(self):
+        if not self.mod_learned_keywords:
+            return
+        learned_words = [
+            word
+            for word, count in sorted(self.mod_learned_keywords.items())
+            if count >= MOD_LEARNED_KEYWORD_THRESHOLD
+        ]
+        if not learned_words:
+            return
+        current = [
+            word.strip()
+            for word in self.mod_keywords_var.get().split(",")
+            if word.strip()
+        ]
+        merged = list(dict.fromkeys(current + learned_words))
+        self.mod_keywords_var.set(", ".join(merged))
+
+    def _learn_keywords_from_message(self, user, text, action, confidence):
+        if not self.mod_learn_var.get():
+            return
+        if action == "allow" or confidence < MOD_LEARNED_MIN_CONFIDENCE:
+            return
+        existing = set(self._get_all_keywords())
+        candidates = self._extract_learnable_tokens(text, user, existing)
+        if not candidates:
+            return
+        for token in candidates:
+            self.mod_learned_keywords[token] = self.mod_learned_keywords.get(token, 0) + 1
+        self._trim_learned_keywords()
+        self._save_learned_keywords()
+        self._sync_keywords_with_learned()
+
+    def _extract_learnable_tokens(self, text, user, existing):
+        user_lower = user.lower()
+        tokens = re.findall(r"[a-zA-Z']+", text.lower())
+        results = []
+        for token in tokens:
+            token = token.strip("'")
+            if len(token) < MOD_LEARNED_MIN_WORD_LEN:
+                continue
+            if token in MOD_LEARNED_STOPWORDS:
+                continue
+            if token in existing:
+                continue
+            if token and token in user_lower:
+                continue
+            results.append(token)
+        unique = list(dict.fromkeys(results))
+        return unique[:5]
+
+    def _trim_learned_keywords(self):
+        if len(self.mod_learned_keywords) <= MOD_LEARNED_KEYWORDS_MAX_ITEMS:
+            return
+        sorted_items = sorted(
+            self.mod_learned_keywords.items(),
+            key=lambda item: (item[1], item[0]),
+        )
+        while len(sorted_items) > MOD_LEARNED_KEYWORDS_MAX_ITEMS:
+            sorted_items.pop(0)
+        self.mod_learned_keywords = dict(sorted_items)
+
+    def _load_learned_keywords(self):
+        if not os.path.exists(MOD_LEARNED_KEYWORDS_FILE):
+            return {}
+        try:
+            with open(MOD_LEARNED_KEYWORDS_FILE, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            self.queue.put(f"AI MOD KEYWORDS READ FAILED -> {exc}")
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        cleaned = {}
+        for key, value in data.items():
+            if not isinstance(key, str) or not key.strip():
+                continue
+            try:
+                cleaned[key.strip().lower()] = int(value)
+            except (TypeError, ValueError):
+                cleaned[key.strip().lower()] = 1
+        return cleaned
+
+    def _save_learned_keywords(self):
+        if not self.mod_learned_keywords:
+            return
+        try:
+            with open(MOD_LEARNED_KEYWORDS_FILE, "w", encoding="utf-8") as handle:
+                json.dump(self.mod_learned_keywords, handle, indent=2, sort_keys=True)
+        except OSError as exc:
+            self.queue.put(f"AI MOD KEYWORDS WRITE FAILED -> {exc}")
 
     def _append_jsonl_memory(self, path, record, max_items, max_bytes, error_prefix):
         if not record:
