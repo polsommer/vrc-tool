@@ -158,9 +158,12 @@ class VrcAdminTool:
         self.mod_worker = None
         self.mod_recent_messages = deque(maxlen=8)
         self.mod_learned_keywords = self._load_learned_keywords()
+        self.mod_autostart_scheduled = False
 
         self._build_ui()
         self._sync_keywords_with_learned()
+        if self.mod_enabled_var.get():
+            self._start_moderation_monitor()
         self._poll_queue()
 
     # ---------------- UI ----------------
@@ -241,7 +244,7 @@ class VrcAdminTool:
         self.mod_status = tk.StringVar(value="Idle")
         ttk.Label(mod_box, textvariable=self.mod_status).pack(anchor=tk.W)
 
-        self.mod_enabled_var = tk.BooleanVar(value=False)
+        self.mod_enabled_var = tk.BooleanVar(value=True)
         self.mod_ai_var = tk.BooleanVar(value=True)
         self.mod_post_alert_var = tk.BooleanVar(value=False)
         self.mod_memory_var = tk.BooleanVar(value=True)
@@ -425,7 +428,6 @@ class VrcAdminTool:
 
         self.status.set("Stopped")
         self.log_event("Admin system stopped")
-        self._stop_moderation_monitor()
 
     # ---------------- Functions ----------------
 
@@ -511,9 +513,13 @@ class VrcAdminTool:
             return
         log_path = self._resolve_log_path()
         if not log_path:
-            self.mod_status.set("No VRChat log detected")
-            self.log_event("MODERATION MONITOR -> VRChat log not found.")
+            self.mod_status.set("Waiting for VRChat log")
+            self.log_event("MODERATION MONITOR -> VRChat log not found. Retrying...")
+            if self.mod_enabled_var.get() and not self.mod_autostart_scheduled:
+                self.mod_autostart_scheduled = True
+                self.root.after(5000, self._retry_moderation_autostart)
             return
+        self.mod_autostart_scheduled = False
         self.mod_running = True
         self.mod_current_log = log_path
         self.mod_file_pos = os.path.getsize(log_path)
@@ -531,8 +537,14 @@ class VrcAdminTool:
         if not self.mod_running:
             return
         self.mod_running = False
+        self.mod_autostart_scheduled = False
         self.mod_status.set("Idle")
         self.log_event("MODERATION MONITOR STOPPED")
+
+    def _retry_moderation_autostart(self):
+        self.mod_autostart_scheduled = False
+        if self.mod_enabled_var.get() and not self.mod_running:
+            self._start_moderation_monitor()
 
     def _schedule_moderation_poll(self):
         if not self.mod_running:
