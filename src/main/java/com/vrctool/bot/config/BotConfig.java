@@ -14,6 +14,7 @@ public record BotConfig(
         String guildId,
         String welcomeChannelId,
         String modLogChannelId,
+        String activePlayersChannelId,
         String staffRoleId,
         String eventPingRoleId,
         String rulesLink,
@@ -22,7 +23,9 @@ public record BotConfig(
         List<String> scanChannelIds,
         List<String> scanKeywords,
         List<Pattern> blockedPatterns,
-        Duration scanInterval
+        Duration scanInterval,
+        int activePlayersWebPort,
+        String activePlayersWebToken
 ) {
     private static final Pattern ENV_KEY_PATTERN = Pattern.compile("[A-Z0-9_]+");
     private static final Dotenv DOTENV = Dotenv.configure().ignoreIfMissing().load();
@@ -36,6 +39,10 @@ public record BotConfig(
                 getOptionalEnv("GUILD_ID"),
                 getOptionalEnv("WELCOME_CHANNEL_ID"),
                 getOptionalEnv("MOD_LOG_CHANNEL_ID"),
+                resolveChannelId(
+                        getOptionalEnv("ACTIVE_PLAYERS_CHANNEL_ID"),
+                        getOptionalEnv("MOD_LOG_CHANNEL_ID")
+                ),
                 getOptionalEnv("STAFF_ROLE_ID"),
                 getOptionalEnv("EVENT_PING_ROLE_ID"),
                 getOptionalEnv("RULES_LINK"),
@@ -58,7 +65,12 @@ public record BotConfig(
                 parseDurationSeconds(
                         getOptionalEnv("MOD_SCAN_INTERVAL_SECONDS"),
                         5
-                )
+                ),
+                parsePort(
+                        getOptionalEnv("ACTIVE_PLAYERS_WEB_PORT"),
+                        8123
+                ),
+                getOptionalEnv("ACTIVE_PLAYERS_WEB_TOKEN")
         );
     }
     private static List<Pattern> parsePatternsOrDefault(
@@ -137,6 +149,28 @@ public record BotConfig(
     private static List<String> parseListOrDefault(String value, List<String> fallback) {
         List<String> parsed = parseList(value);
         return parsed.isEmpty() ? fallback : parsed;
+    }
+
+    private static String resolveChannelId(String primary, String fallback) {
+        if (primary != null && !primary.isBlank()) {
+            return primary;
+        }
+        return (fallback != null && !fallback.isBlank()) ? fallback : null;
+    }
+
+    private static int parsePort(String value, int defaultPort) {
+        if (value == null || value.isBlank()) {
+            return defaultPort;
+        }
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            if (parsed >= 1 && parsed <= 65535) {
+                return parsed;
+            }
+        } catch (NumberFormatException ignored) {
+            return defaultPort;
+        }
+        return defaultPort;
     }
 
     private static Duration parseDurationSeconds(String value, int defaultSeconds) {
