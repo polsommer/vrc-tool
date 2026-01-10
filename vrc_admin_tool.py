@@ -59,6 +59,8 @@ MOD_LEARNED_KEYWORDS_MAX_ITEMS = 200
 MOD_LEARNED_KEYWORD_THRESHOLD = 2
 MOD_LEARNED_MIN_CONFIDENCE = 0.6
 MOD_LEARNED_MIN_WORD_LEN = 4
+DISCORD_ACTIVE_PLAYERS_ENDPOINT = "http://127.0.0.1:8123/active-players"
+DISCORD_ACTIVE_PLAYERS_TOKEN = ""
 
 MOD_DEFAULT_KEYWORDS = [
     "dox",
@@ -236,6 +238,11 @@ class VrcAdminTool:
 
         self.player_list = tk.Listbox(players_box, height=6)
         self.player_list.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(
+            players_box,
+            text="Post Active Players to Discord",
+            command=self.post_active_players_to_discord
+        ).pack(fill=tk.X, pady=(6, 0))
 
         # Live Moderation
         mod_box = ttk.LabelFrame(main, text="Live Chat Moderation", padding=10)
@@ -489,6 +496,48 @@ class VrcAdminTool:
         players = self._extract_active_players(lines)
         self._update_player_list(players)
         self.log_event(f"VRCHAT PLAYERS FOUND: {len(players)}")
+
+    def post_active_players_to_discord(self):
+        players = list(self.active_players)
+        if not players:
+            self.load_players_from_log()
+            players = list(self.active_players)
+
+        if not players:
+            self.log_event("DISCORD POST SKIPPED: No active players found.")
+            return
+
+        payload = {
+            "players": players,
+            "count": len(players),
+            "source": "vrc_admin_tool",
+        }
+        data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        token = DISCORD_ACTIVE_PLAYERS_TOKEN.strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        request = urllib.request.Request(
+            DISCORD_ACTIVE_PLAYERS_ENDPOINT,
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            self.log_event(f"DISCORD POST FAILED: {exc.code} {exc.reason}")
+            return
+        except urllib.error.URLError as exc:
+            self.log_event(f"DISCORD POST FAILED: {exc.reason}")
+            return
+
+        if 200 <= status < 300:
+            self.log_event("DISCORD POST OK: Active players sent.")
+        else:
+            self.log_event(f"DISCORD POST FAILED: HTTP {status}")
 
     def send_chatbox(self, text):
         self.chat.send_message(

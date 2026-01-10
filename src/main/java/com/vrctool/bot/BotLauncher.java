@@ -4,6 +4,7 @@ import com.vrctool.bot.config.BotConfig;
 import com.vrctool.bot.listener.MemberJoinListener;
 import com.vrctool.bot.listener.MessageModerationListener;
 import com.vrctool.bot.listener.SlashCommandListener;
+import com.vrctool.bot.service.ActivePlayersServer;
 import com.vrctool.bot.service.FaqService;
 import com.vrctool.bot.service.ModerationScanService;
 import com.vrctool.bot.service.TemplateService;
@@ -43,5 +44,6 @@ public final class BotLauncher {
 
         jda.awaitReady();
         scanService.start(jda);
+        new ActivePlayersServer(config).start(jda);
     }
 }
