@@ -22,7 +22,7 @@ public class MessageModerationListener extends ListenerAdapter {
 
     public MessageModerationListener(BotConfig config) {
         this.config = config;
-        this.blockedPatterns = compilePatterns(config.blockedPatterns());
+        this.blockedPatterns = config.blockedPatterns();
         this.keywordPatterns = config.scanKeywords().stream()
                 .map(keyword -> new KeywordPattern(keyword, ModerationPatterns.compileKeywordPattern(keyword)))
                 .toList();
@@ -117,9 +117,4 @@ public class MessageModerationListener extends ListenerAdapter {
         modChannel.sendMessageEmbeds(builder.build()).queue();
     }
 
-    private static List<Pattern> compilePatterns(List<String> terms) {
-        return terms.stream()
-                .map(ModerationPatterns::compileBlockedPattern)
-                .toList();
-    }
 }
