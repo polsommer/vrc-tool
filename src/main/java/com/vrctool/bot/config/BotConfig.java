@@ -2,9 +2,11 @@ package com.vrctool.bot.config;
 
 import io.github.cdimascio.dotenv.Dotenv;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 
 public record BotConfig(
@@ -19,7 +21,7 @@ public record BotConfig(
         String supportLink,
         List<String> scanChannelIds,
         List<String> scanKeywords,
-        List<String> blockedPatterns,
+        List<Pattern> blockedPatterns,
         Duration scanInterval
 ) {
     private static final Pattern ENV_KEY_PATTERN = Pattern.compile("[A-Z0-9_]+");
