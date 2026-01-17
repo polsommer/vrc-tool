@@ -96,6 +96,7 @@ public class MessageModerationListener extends ListenerAdapter {
                 .addField("Blocked pattern", safeValue(context.blockedPattern()), true)
                 .addField("LLM risk", safeValue(context.llmRiskLevel()), true)
                 .addField("LLM rationale", safeValue(context.llmRationale()), false)
+                .addField("Self review", safeValue(context.selfReviewNote()), false)
                 .addField("Scores (base/format/history/channel/total)", String.format(
                         "%d / %d / %d / %d / %d",
                         context.baseRiskScore(),
@@ -148,6 +149,7 @@ public class MessageModerationListener extends ListenerAdapter {
                 .addField("Blocked pattern", safeValue(context.blockedPattern()), true)
                 .addField("LLM risk", safeValue(context.llmRiskLevel()), true)
                 .addField("LLM rationale", safeValue(context.llmRationale()), false)
+                .addField("Self review", safeValue(context.selfReviewNote()), false)
                 .addField("Scores (base/format/history/channel/total)", String.format(
                         "%d / %d / %d / %d / %d",
                         context.baseRiskScore(),

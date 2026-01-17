@@ -408,9 +408,6 @@ public record BotConfig(
                 // =====================================
                 // LINKS & URL OBFUSCATION
                 // =====================================
-                Pattern.compile("http[s]?://", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("www\\.", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\b[a-z0-9.-]+\\.(com|net|org|io|ru|cn|tk|xyz|top|gg)\\b", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("h\\s*t\\s*t\\s*p", Pattern.CASE_INSENSITIVE), // h t t p evasion
                 Pattern.compile("dot\\s*(com|net|org|gg)", Pattern.CASE_INSENSITIVE),
 
