@@ -26,7 +26,12 @@ public record BotConfig(
         Duration scanInterval,
         int activePlayersWebPort,
         String activePlayersWebToken,
-        String wordMemoryPath
+        String wordMemoryPath,
+        int modWarnThreshold,
+        int modDeleteThreshold,
+        int modEscalateThreshold,
+        String modEscalationChannelId,
+        java.util.Map<String, Integer> channelRiskProfiles
 ) {
     private static final Pattern ENV_KEY_PATTERN = Pattern.compile("[A-Z0-9_]+");
     private static final Dotenv DOTENV = Dotenv.configure().ignoreIfMissing().load();
@@ -74,7 +79,12 @@ public record BotConfig(
                         8123
                 ),
                 getOptionalEnv("ACTIVE_PLAYERS_WEB_TOKEN"),
-                resolveWordMemoryPath(getOptionalEnv("WORD_MEMORY_PATH"))
+                resolveWordMemoryPath(getOptionalEnv("WORD_MEMORY_PATH")),
+                parseIntOrDefault(getOptionalEnv("MOD_WARN_THRESHOLD"), 35),
+                parseIntOrDefault(getOptionalEnv("MOD_DELETE_THRESHOLD"), 60),
+                parseIntOrDefault(getOptionalEnv("MOD_ESCALATE_THRESHOLD"), 80),
+                getOptionalEnv("MOD_ESCALATION_CHANNEL_ID"),
+                parseChannelRiskProfiles(getOptionalEnv("MOD_CHANNEL_RISK_SCORES"))
         );
     }
 
@@ -83,6 +93,39 @@ public record BotConfig(
             return value.trim();
         }
         return "data/word_memory.jsonl";
+    }
+
+    public int channelRiskScore(String channelId) {
+        if (channelId == null || channelId.isBlank()) {
+            return 0;
+        }
+        Integer riskScore = channelRiskProfiles.get(channelId);
+        return riskScore == null ? 0 : riskScore;
+    }
+
+    private static java.util.Map<String, Integer> parseChannelRiskProfiles(String value) {
+        if (value == null || value.isBlank()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<String, Integer> profiles = new java.util.HashMap<>();
+        for (String entry : value.split(",")) {
+            String trimmed = entry.trim();
+            if (trimmed.isEmpty() || !trimmed.contains(":")) {
+                continue;
+            }
+            String[] parts = trimmed.split(":", 2);
+            String channelId = parts[0].trim();
+            String rawScore = parts[1].trim();
+            if (channelId.isEmpty() || rawScore.isEmpty()) {
+                continue;
+            }
+            try {
+                profiles.put(channelId, Integer.parseInt(rawScore));
+            } catch (NumberFormatException ignored) {
+                System.err.println("[MODERATION] Invalid channel risk score ignored: " + trimmed);
+            }
+        }
+        return profiles.isEmpty() ? java.util.Map.of() : java.util.Map.copyOf(profiles);
     }
     private static List<Pattern> parsePatternsOrDefault(
             String env,
@@ -185,6 +228,17 @@ public record BotConfig(
             return defaultPort;
         }
         return defaultPort;
+    }
+
+    private static int parseIntOrDefault(String value, int defaultValue) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
     }
 
     private static Duration parseDurationSeconds(String value, int defaultSeconds) {
