@@ -2,6 +2,7 @@ package com.vrctool.bot.service;
 
 import com.vrctool.bot.config.BotConfig;
 import com.vrctool.bot.util.ModerationPatterns;
+import com.vrctool.bot.util.TextNormalizer;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -48,10 +49,12 @@ public class ModerationDecisionEngine {
     private final WordMemoryStore wordMemoryStore;
     private final List<Pattern> blockedPatterns;
     private final List<KeywordPattern> keywordPatterns;
+    private final TextNormalizer textNormalizer;
 
-    public ModerationDecisionEngine(BotConfig config, WordMemoryStore wordMemoryStore) {
+    public ModerationDecisionEngine(BotConfig config, WordMemoryStore wordMemoryStore, TextNormalizer textNormalizer) {
         this.config = config;
         this.wordMemoryStore = wordMemoryStore;
+        this.textNormalizer = textNormalizer;
         this.blockedPatterns = config.blockedPatterns();
         this.keywordPatterns = config.scanKeywords().stream()
                 .map(keyword -> new KeywordPattern(keyword, ModerationPatterns.compileKeywordPattern(keyword)))
@@ -60,11 +63,14 @@ public class ModerationDecisionEngine {
 
     public Decision evaluate(Message message, Member member, MessageChannel channel) {
         String content = message.getContentDisplay();
-        String normalized = content.toLowerCase(Locale.ROOT);
+        String lowercase = content.toLowerCase(Locale.ROOT);
+        TextNormalizer.NormalizedResult normalizedResult = textNormalizer.normalizeAndExpand(content);
+        String normalized = normalizedResult.normalized();
+        String expanded = normalizedResult.expanded();
 
         String matchedKeyword = null;
         for (KeywordPattern keywordPattern : keywordPatterns) {
-            if (keywordPattern.pattern().matcher(normalized).find()) {
+            if (matchesAny(keywordPattern.pattern(), content, normalized, expanded)) {
                 matchedKeyword = keywordPattern.keyword();
                 break;
             }
@@ -72,14 +78,14 @@ public class ModerationDecisionEngine {
 
         String blockedPattern = null;
         for (Pattern pattern : blockedPatterns) {
-            if (pattern.matcher(normalized).find()) {
+            if (matchesAny(pattern, content, normalized, expanded)) {
                 blockedPattern = pattern.pattern();
                 break;
             }
         }
 
         int messageLength = content.length();
-        int linkCount = countLinks(normalized);
+        int linkCount = countLinks(lowercase);
         double uppercaseRatio = calculateUppercaseRatio(content);
         int messageRiskScore = scoreMessageFormat(messageLength, linkCount, uppercaseRatio);
 
@@ -141,6 +147,15 @@ public class ModerationDecisionEngine {
         );
 
         return new Decision(action, context);
+    }
+
+    private static boolean matchesAny(Pattern pattern, String... candidates) {
+        for (String candidate : candidates) {
+            if (candidate != null && !candidate.isBlank() && pattern.matcher(candidate).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static int scoreMessageFormat(int messageLength, int linkCount, double uppercaseRatio) {

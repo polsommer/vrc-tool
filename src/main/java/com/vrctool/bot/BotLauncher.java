@@ -9,6 +9,7 @@ import com.vrctool.bot.service.FaqService;
 import com.vrctool.bot.service.ModerationScanService;
 import com.vrctool.bot.service.TemplateService;
 import com.vrctool.bot.service.WordMemoryStore;
+import com.vrctool.bot.util.TextNormalizer;
 import java.nio.file.Paths;
 import java.util.List;
 import net.dv8tion.jda.api.JDA;
@@ -30,7 +31,11 @@ public final class BotLauncher {
         TemplateService templateService = new TemplateService(config);
         WordMemoryStore wordMemoryStore = new WordMemoryStore(Paths.get(config.wordMemoryPath()));
         wordMemoryStore.load();
-        ModerationScanService scanService = new ModerationScanService(config, wordMemoryStore);
+        TextNormalizer textNormalizer = TextNormalizer.fromResource(
+                "moderation-synonyms.json",
+                TextNormalizer.MorphologyMode.STEM
+        );
+        ModerationScanService scanService = new ModerationScanService(config, wordMemoryStore, textNormalizer);
 
         JDA jda = JDABuilder.createDefault(config.discordToken())
                 .enableIntents(List.of(
@@ -41,7 +46,7 @@ public final class BotLauncher {
                 .setMemberCachePolicy(MemberCachePolicy.ONLINE)
                 .addEventListeners(
                         new MemberJoinListener(config, templateService),
-                        new MessageModerationListener(config, wordMemoryStore)
+                        new MessageModerationListener(config, wordMemoryStore, textNormalizer)
                 )
                 .build();
 
