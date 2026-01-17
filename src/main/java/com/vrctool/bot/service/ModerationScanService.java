@@ -3,7 +3,6 @@ package com.vrctool.bot.service;
 import com.vrctool.bot.config.BotConfig;
 import com.vrctool.bot.util.ModerationPatterns;
 import java.time.Instant;
-import java.time.OffsetDateTime;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -27,9 +26,11 @@ public class ModerationScanService {
     private final ScheduledExecutorService scheduler;
     private final Map<String, String> lastMessageIds;
     private final List<KeywordPattern> keywordPatterns;
+    private final WordMemoryStore wordMemoryStore;
 
-    public ModerationScanService(BotConfig config) {
+    public ModerationScanService(BotConfig config, WordMemoryStore wordMemoryStore) {
         this.config = config;
+        this.wordMemoryStore = wordMemoryStore;
         int threadCount = Math.max(2, config.scanChannelIds().size());
         this.scheduler = Executors.newScheduledThreadPool(threadCount);
         this.lastMessageIds = new ConcurrentHashMap<>();
@@ -75,6 +76,13 @@ public class ModerationScanService {
                     if (message.getAuthor().isBot() || message.isWebhookMessage()) {
                         return;
                     }
+                    wordMemoryStore.recordMessage(
+                            message.getGuild().getId(),
+                            channel.getId(),
+                            message.getAuthor().getId(),
+                            message.getContentDisplay(),
+                            message.getTimeCreated().toInstant()
+                    );
                     String content = message.getContentDisplay().toLowerCase(Locale.ROOT);
                     for (KeywordPattern keywordPattern : keywordPatterns) {
                         if (keywordPattern.pattern().matcher(content).find()) {
@@ -101,12 +109,19 @@ public class ModerationScanService {
         }
         Member member = message.getMember();
         String author = member == null ? message.getAuthor().getAsTag() : member.getUser().getAsTag();
+        int recentCount = wordMemoryStore.getTokenCount(
+                message.getGuild().getId(),
+                origin.getId(),
+                message.getAuthor().getId(),
+                keyword
+        );
         EmbedBuilder builder = new EmbedBuilder()
                 .setTitle("Flagged message scan")
                 .setDescription("Keyword match: **" + keyword + "**")
                 .addField("Member", author, true)
                 .addField("Channel", origin.getAsMention(), true)
                 .addField("Content", message.getContentDisplay(), false)
+                .addField("Recent matches (30d)", String.valueOf(recentCount), true)
                 .setTimestamp(Instant.now())
                 .setColor(0xF97316);
         modChannel.sendMessageEmbeds(builder.build()).queue();

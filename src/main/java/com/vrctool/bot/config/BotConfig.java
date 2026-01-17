@@ -25,7 +25,8 @@ public record BotConfig(
         List<Pattern> blockedPatterns,
         Duration scanInterval,
         int activePlayersWebPort,
-        String activePlayersWebToken
+        String activePlayersWebToken,
+        String wordMemoryPath
 ) {
     private static final Pattern ENV_KEY_PATTERN = Pattern.compile("[A-Z0-9_]+");
     private static final Dotenv DOTENV = Dotenv.configure().ignoreIfMissing().load();
@@ -72,8 +73,16 @@ public record BotConfig(
                         getOptionalEnv("ACTIVE_PLAYERS_WEB_PORT"),
                         8123
                 ),
-                getOptionalEnv("ACTIVE_PLAYERS_WEB_TOKEN")
+                getOptionalEnv("ACTIVE_PLAYERS_WEB_TOKEN"),
+                resolveWordMemoryPath(getOptionalEnv("WORD_MEMORY_PATH"))
         );
+    }
+
+    private static String resolveWordMemoryPath(String value) {
+        if (value != null && !value.isBlank()) {
+            return value.trim();
+        }
+        return "data/word_memory.jsonl";
     }
     private static List<Pattern> parsePatternsOrDefault(
             String env,

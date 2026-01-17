@@ -1,6 +1,7 @@
 package com.vrctool.bot.listener;
 
 import com.vrctool.bot.config.BotConfig;
+import com.vrctool.bot.service.WordMemoryStore;
 import com.vrctool.bot.util.ModerationPatterns;
 import java.time.Instant;
 import java.util.List;
@@ -19,9 +20,11 @@ public class MessageModerationListener extends ListenerAdapter {
     private final BotConfig config;
     private final List<Pattern> blockedPatterns;
     private final List<KeywordPattern> keywordPatterns;
+    private final WordMemoryStore wordMemoryStore;
 
-    public MessageModerationListener(BotConfig config) {
+    public MessageModerationListener(BotConfig config, WordMemoryStore wordMemoryStore) {
         this.config = config;
+        this.wordMemoryStore = wordMemoryStore;
         this.blockedPatterns = config.blockedPatterns();
         this.keywordPatterns = config.scanKeywords().stream()
                 .map(keyword -> new KeywordPattern(keyword, ModerationPatterns.compileKeywordPattern(keyword)))
@@ -41,6 +44,13 @@ public class MessageModerationListener extends ListenerAdapter {
         }
 
         String content = message.getContentDisplay().toLowerCase(Locale.ROOT);
+        wordMemoryStore.recordMessage(
+                event.getGuild().getId(),
+                event.getChannel().getId(),
+                member.getId(),
+                content,
+                message.getTimeCreated().toInstant()
+        );
         boolean blocked = false;
         for (Pattern pattern : blockedPatterns) {
             if (pattern.matcher(content).find()) {
@@ -59,7 +69,12 @@ public class MessageModerationListener extends ListenerAdapter {
         for (KeywordPattern keywordPattern : keywordPatterns) {
             if (keywordPattern.pattern().matcher(content).find()) {
                 warnKeyword(event.getChannel(), member, keywordPattern.keyword());
-                logKeywordWarning(event.getChannel(), member, message.getContentDisplay(), keywordPattern.keyword());
+                logKeywordWarning(
+                        event.getChannel(),
+                        member,
+                        message.getContentDisplay(),
+                        keywordPattern.keyword()
+                );
                 break;
             }
         }
@@ -106,12 +121,19 @@ public class MessageModerationListener extends ListenerAdapter {
         if (modChannel == null) {
             return;
         }
+        int recentCount = wordMemoryStore.getTokenCount(
+                member.getGuild().getId(),
+                origin.getId(),
+                member.getId(),
+                keyword
+        );
         EmbedBuilder builder = new EmbedBuilder()
                 .setTitle("Keyword warning")
                 .setDescription("Keyword match: **" + keyword + "**")
                 .addField("Member", member.getUser().getAsTag(), true)
                 .addField("Channel", origin.getAsMention(), true)
                 .addField("Content", content, false)
+                .addField("Recent matches (30d)", String.valueOf(recentCount), true)
                 .setTimestamp(Instant.now())
                 .setColor(0xF97316);
         modChannel.sendMessageEmbeds(builder.build()).queue();
