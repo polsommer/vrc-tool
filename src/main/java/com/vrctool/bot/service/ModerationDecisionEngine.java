@@ -50,6 +50,10 @@ public class ModerationDecisionEngine {
     private record ReviewResult(Action action, String note) {}
 
     private static final Pattern LINK_PATTERN = Pattern.compile("https?://\\S+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern ALLOWED_GIF_LINK_PATTERN = Pattern.compile(
+            "https?://(?:www\\.)?tenor\\.com/view/\\S*gif\\S*",
+            Pattern.CASE_INSENSITIVE
+    );
 
     private final BotConfig config;
     private final WordMemoryStore wordMemoryStore;
@@ -80,6 +84,10 @@ public class ModerationDecisionEngine {
         TextNormalizer.NormalizedResult normalizedResult = textNormalizer.normalizeAndExpand(content);
         String normalized = normalizedResult.normalized();
         String expanded = normalizedResult.expanded();
+        String sanitizedContent = stripAllowedGifLinks(content);
+        TextNormalizer.NormalizedResult blockedNormalizedResult = textNormalizer.normalizeAndExpand(sanitizedContent);
+        String blockedNormalized = blockedNormalizedResult.normalized();
+        String blockedExpanded = blockedNormalizedResult.expanded();
 
         String matchedKeyword = null;
         for (KeywordPattern keywordPattern : keywordPatterns) {
@@ -91,14 +99,14 @@ public class ModerationDecisionEngine {
 
         String blockedPattern = null;
         for (Pattern pattern : blockedPatterns) {
-            if (matchesAny(pattern, content, normalized, expanded)) {
+            if (matchesAny(pattern, sanitizedContent, blockedNormalized, blockedExpanded)) {
                 blockedPattern = pattern.pattern();
                 break;
             }
         }
 
         int messageLength = content.length();
-        int linkCount = countLinks(lowercase);
+        int linkCount = countLinks(sanitizedContent.toLowerCase(Locale.ROOT));
         double uppercaseRatio = calculateUppercaseRatio(content);
         int messageRiskScore = scoreMessageFormat(messageLength, linkCount, uppercaseRatio);
 
@@ -237,6 +245,13 @@ public class ModerationDecisionEngine {
             count++;
         }
         return count;
+    }
+
+    private static String stripAllowedGifLinks(String content) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        return ALLOWED_GIF_LINK_PATTERN.matcher(content).replaceAll(" ");
     }
 
     private static double calculateUppercaseRatio(String content) {

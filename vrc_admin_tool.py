@@ -88,6 +88,7 @@ MOD_LEARNED_STOPWORDS = {
     "first",
     "found",
     "friend",
+    "gif",
     "going",
     "hello",
     "help",
