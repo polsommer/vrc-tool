@@ -1,12 +1,10 @@
 package com.vrctool.bot.listener;
 
 import com.vrctool.bot.config.BotConfig;
+import com.vrctool.bot.service.ModerationDecisionEngine;
 import com.vrctool.bot.service.WordMemoryStore;
-import com.vrctool.bot.util.ModerationPatterns;
 import java.time.Instant;
-import java.util.List;
 import java.util.Locale;
-import java.util.regex.Pattern;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Message;
@@ -15,20 +13,14 @@ import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 
 public class MessageModerationListener extends ListenerAdapter {
-    private record KeywordPattern(String keyword, Pattern pattern) {}
-
     private final BotConfig config;
-    private final List<Pattern> blockedPatterns;
-    private final List<KeywordPattern> keywordPatterns;
+    private final ModerationDecisionEngine decisionEngine;
     private final WordMemoryStore wordMemoryStore;
 
     public MessageModerationListener(BotConfig config, WordMemoryStore wordMemoryStore) {
         this.config = config;
         this.wordMemoryStore = wordMemoryStore;
-        this.blockedPatterns = config.blockedPatterns();
-        this.keywordPatterns = config.scanKeywords().stream()
-                .map(keyword -> new KeywordPattern(keyword, ModerationPatterns.compileKeywordPattern(keyword)))
-                .toList();
+        this.decisionEngine = new ModerationDecisionEngine(config, wordMemoryStore);
     }
 
     @Override
@@ -51,31 +43,21 @@ public class MessageModerationListener extends ListenerAdapter {
                 content,
                 message.getTimeCreated().toInstant()
         );
-        boolean blocked = false;
-        for (Pattern pattern : blockedPatterns) {
-            if (pattern.matcher(content).find()) {
+        ModerationDecisionEngine.Decision decision = decisionEngine.evaluate(message, member, event.getChannel());
+        switch (decision.action()) {
+            case DELETE -> {
                 message.delete().queue();
-                message.getChannel().sendMessage(member.getAsMention() + " please avoid posting invite or scam links.")
-                        .queue();
-                logModeration(event.getChannel(), member, message.getContentDisplay());
-                blocked = true;
-                break;
+                sendDeleteNotice(event.getChannel(), member, decision.context());
+                logModerationAction(event.getChannel(), member, decision);
             }
-        }
-        if (blocked) {
-            return;
-        }
-
-        for (KeywordPattern keywordPattern : keywordPatterns) {
-            if (keywordPattern.pattern().matcher(content).find()) {
-                warnKeyword(event.getChannel(), member, keywordPattern.keyword());
-                logKeywordWarning(
-                        event.getChannel(),
-                        member,
-                        message.getContentDisplay(),
-                        keywordPattern.keyword()
-                );
-                break;
+            case WARN -> {
+                sendWarning(event.getChannel(), member, decision.context());
+                logModerationAction(event.getChannel(), member, decision);
+            }
+            case ESCALATE_TO_MODS -> {
+                logEscalation(event.getChannel(), member, decision);
+            }
+            case ALLOW -> {
             }
         }
     }
@@ -87,56 +69,157 @@ public class MessageModerationListener extends ListenerAdapter {
         return member.getRoles().stream().anyMatch(role -> role.getId().equals(config.staffRoleId()));
     }
 
-    private void logModeration(MessageChannel origin, Member member, String content) {
-        if (config.modLogChannelId() == null) {
-            return;
-        }
-        MessageChannel modChannel = origin.getJDA().getChannelById(MessageChannel.class, config.modLogChannelId());
+    private void logModerationAction(
+            MessageChannel origin,
+            Member member,
+            ModerationDecisionEngine.Decision decision
+    ) {
+        MessageChannel modChannel = resolveModLogChannel(origin);
         if (modChannel == null) {
             return;
         }
+        ModerationDecisionEngine.DecisionContext context = decision.context();
         EmbedBuilder builder = new EmbedBuilder()
-                .setTitle("Auto-moderation action")
+                .setTitle("Auto-moderation action: " + decision.action())
                 .addField("Member", member.getUser().getAsTag(), true)
                 .addField("Channel", origin.getAsMention(), true)
-                .addField("Content", content, false)
+                .addField("Content", context.content(), false)
+                .addField("Matched keyword", safeValue(context.matchedKeyword()), true)
+                .addField("Blocked pattern", safeValue(context.blockedPattern()), true)
+                .addField("Scores (base/format/history/channel/total)", String.format(
+                        "%d / %d / %d / %d / %d",
+                        context.baseRiskScore(),
+                        context.messageRiskScore(),
+                        context.historyRiskScore(),
+                        context.channelRiskScore(),
+                        context.totalRiskScore()
+                ), false)
+                .addField("Thresholds (warn/delete/escalate)", String.format(
+                        "%d / %d / %d",
+                        context.warnThreshold(),
+                        context.deleteThreshold(),
+                        context.escalateThreshold()
+                ), true)
+                .addField("Message stats (len/links/uppercase%)", String.format(
+                        "%d / %d / %.0f%%",
+                        context.messageLength(),
+                        context.linkCount(),
+                        context.uppercaseRatio() * 100
+                ), true)
+                .addField("History (recent matches/total tokens)", String.format(
+                        "%d / %d",
+                        context.recentKeywordMatches(),
+                        context.totalRecentTokens()
+                ), true)
                 .setTimestamp(Instant.now())
                 .setColor(0xEF4444);
         modChannel.sendMessageEmbeds(builder.build()).queue();
     }
 
-    private void warnKeyword(MessageChannel origin, Member member, String keyword) {
+    private void logEscalation(
+            MessageChannel origin,
+            Member member,
+            ModerationDecisionEngine.Decision decision
+    ) {
+        MessageChannel modChannel = resolveModLogChannel(origin);
+        MessageChannel escalationChannel = resolveEscalationChannel(origin);
+        if (modChannel == null && escalationChannel == null) {
+            return;
+        }
+        ModerationDecisionEngine.DecisionContext context = decision.context();
+        EmbedBuilder builder = new EmbedBuilder()
+                .setTitle("Escalation needed: " + decision.action())
+                .setDescription("Automated moderation flagged this message for manual review.")
+                .addField("Member", member.getUser().getAsTag(), true)
+                .addField("Channel", origin.getAsMention(), true)
+                .addField("Content", context.content(), false)
+                .addField("Matched keyword", safeValue(context.matchedKeyword()), true)
+                .addField("Blocked pattern", safeValue(context.blockedPattern()), true)
+                .addField("Scores (base/format/history/channel/total)", String.format(
+                        "%d / %d / %d / %d / %d",
+                        context.baseRiskScore(),
+                        context.messageRiskScore(),
+                        context.historyRiskScore(),
+                        context.channelRiskScore(),
+                        context.totalRiskScore()
+                ), false)
+                .addField("Thresholds (warn/delete/escalate)", String.format(
+                        "%d / %d / %d",
+                        context.warnThreshold(),
+                        context.deleteThreshold(),
+                        context.escalateThreshold()
+                ), true)
+                .addField("Message stats (len/links/uppercase%)", String.format(
+                        "%d / %d / %.0f%%",
+                        context.messageLength(),
+                        context.linkCount(),
+                        context.uppercaseRatio() * 100
+                ), true)
+                .addField("History (recent matches/total tokens)", String.format(
+                        "%d / %d",
+                        context.recentKeywordMatches(),
+                        context.totalRecentTokens()
+                ), true)
+                .setTimestamp(Instant.now())
+                .setColor(0xE11D48);
+        if (modChannel != null) {
+            modChannel.sendMessageEmbeds(builder.build()).queue();
+        }
+        if (escalationChannel != null && !escalationChannel.getId().equals(modChannel == null ? "" : modChannel.getId())) {
+            escalationChannel.sendMessageEmbeds(builder.build()).queue();
+        }
+    }
+
+    private void sendWarning(
+            MessageChannel origin,
+            Member member,
+            ModerationDecisionEngine.DecisionContext context
+    ) {
+        if (context.matchedKeyword() != null) {
+            origin.sendMessage(member.getAsMention()
+                            + " please avoid discussing or sharing content related to **"
+                            + context.matchedKeyword()
+                            + "**.")
+                    .queue();
+            return;
+        }
         origin.sendMessage(member.getAsMention()
-                        + " please avoid discussing or sharing content related to **"
-                        + keyword
-                        + "**.")
+                        + " please keep messages appropriate for this channel.")
                 .queue();
     }
 
-    private void logKeywordWarning(MessageChannel origin, Member member, String content, String keyword) {
+    private void sendDeleteNotice(
+            MessageChannel origin,
+            Member member,
+            ModerationDecisionEngine.DecisionContext context
+    ) {
+        if (context.blockedPattern() != null) {
+            origin.sendMessage(member.getAsMention()
+                            + " please avoid posting invite or scam links.")
+                    .queue();
+            return;
+        }
+        origin.sendMessage(member.getAsMention()
+                        + " your message was removed for moderation review.")
+                .queue();
+    }
+
+    private MessageChannel resolveModLogChannel(MessageChannel origin) {
         if (config.modLogChannelId() == null) {
-            return;
+            return null;
         }
-        MessageChannel modChannel = origin.getJDA().getChannelById(MessageChannel.class, config.modLogChannelId());
-        if (modChannel == null) {
-            return;
+        return origin.getJDA().getChannelById(MessageChannel.class, config.modLogChannelId());
+    }
+
+    private MessageChannel resolveEscalationChannel(MessageChannel origin) {
+        if (config.modEscalationChannelId() == null) {
+            return null;
         }
-        int recentCount = wordMemoryStore.getTokenCount(
-                member.getGuild().getId(),
-                origin.getId(),
-                member.getId(),
-                keyword
-        );
-        EmbedBuilder builder = new EmbedBuilder()
-                .setTitle("Keyword warning")
-                .setDescription("Keyword match: **" + keyword + "**")
-                .addField("Member", member.getUser().getAsTag(), true)
-                .addField("Channel", origin.getAsMention(), true)
-                .addField("Content", content, false)
-                .addField("Recent matches (30d)", String.valueOf(recentCount), true)
-                .setTimestamp(Instant.now())
-                .setColor(0xF97316);
-        modChannel.sendMessageEmbeds(builder.build()).queue();
+        return origin.getJDA().getChannelById(MessageChannel.class, config.modEscalationChannelId());
+    }
+
+    private String safeValue(String value) {
+        return value == null || value.isBlank() ? "None" : value;
     }
 
 }
