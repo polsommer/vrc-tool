@@ -3,8 +3,8 @@ package com.vrctool.bot.listener;
 import com.vrctool.bot.config.BotConfig;
 import com.vrctool.bot.service.ModerationDecisionEngine;
 import com.vrctool.bot.service.WordMemoryStore;
+import com.vrctool.bot.util.TextNormalizer;
 import java.time.Instant;
-import java.util.Locale;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Message;
@@ -16,11 +16,13 @@ public class MessageModerationListener extends ListenerAdapter {
     private final BotConfig config;
     private final ModerationDecisionEngine decisionEngine;
     private final WordMemoryStore wordMemoryStore;
+    private final TextNormalizer textNormalizer;
 
-    public MessageModerationListener(BotConfig config, WordMemoryStore wordMemoryStore) {
+    public MessageModerationListener(BotConfig config, WordMemoryStore wordMemoryStore, TextNormalizer textNormalizer) {
         this.config = config;
         this.wordMemoryStore = wordMemoryStore;
-        this.decisionEngine = new ModerationDecisionEngine(config, wordMemoryStore);
+        this.textNormalizer = textNormalizer;
+        this.decisionEngine = new ModerationDecisionEngine(config, wordMemoryStore, textNormalizer);
     }
 
     @Override
@@ -35,7 +37,7 @@ public class MessageModerationListener extends ListenerAdapter {
             return;
         }
 
-        String content = message.getContentDisplay().toLowerCase(Locale.ROOT);
+        String content = textNormalizer.normalize(message.getContentDisplay());
         wordMemoryStore.recordMessage(
                 event.getGuild().getId(),
                 event.getChannel().getId(),

@@ -1,0 +1,21 @@
+{
+  "harass": [
+    "bully",
+    "intimidate",
+    "torment"
+  ],
+  "threat": [
+    "menace",
+    "coerce"
+  ],
+  "scam": [
+    "fraud",
+    "phishing",
+    "con"
+  ],
+  "dox": [
+    "doxx",
+    "doxxing",
+    "leak"
+  ]
+}

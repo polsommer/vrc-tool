@@ -2,10 +2,10 @@ package com.vrctool.bot.service;
 
 import com.vrctool.bot.config.BotConfig;
 import com.vrctool.bot.util.ModerationPatterns;
+import com.vrctool.bot.util.TextNormalizer;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -27,10 +27,12 @@ public class ModerationScanService {
     private final Map<String, String> lastMessageIds;
     private final List<KeywordPattern> keywordPatterns;
     private final WordMemoryStore wordMemoryStore;
+    private final TextNormalizer textNormalizer;
 
-    public ModerationScanService(BotConfig config, WordMemoryStore wordMemoryStore) {
+    public ModerationScanService(BotConfig config, WordMemoryStore wordMemoryStore, TextNormalizer textNormalizer) {
         this.config = config;
         this.wordMemoryStore = wordMemoryStore;
+        this.textNormalizer = textNormalizer;
         int threadCount = Math.max(2, config.scanChannelIds().size());
         this.scheduler = Executors.newScheduledThreadPool(threadCount);
         this.lastMessageIds = new ConcurrentHashMap<>();
@@ -80,17 +82,29 @@ public class ModerationScanService {
                             message.getGuild().getId(),
                             channel.getId(),
                             message.getAuthor().getId(),
-                            message.getContentDisplay(),
+                            textNormalizer.normalize(message.getContentDisplay()),
                             message.getTimeCreated().toInstant()
                     );
-                    String content = message.getContentDisplay().toLowerCase(Locale.ROOT);
+                    String content = message.getContentDisplay();
+                    TextNormalizer.NormalizedResult normalizedResult = textNormalizer.normalizeAndExpand(content);
+                    String normalized = normalizedResult.normalized();
+                    String expanded = normalizedResult.expanded();
                     for (KeywordPattern keywordPattern : keywordPatterns) {
-                        if (keywordPattern.pattern().matcher(content).find()) {
+                        if (matchesAny(keywordPattern.pattern(), content, normalized, expanded)) {
                             logFlag(channel, message, keywordPattern.keyword());
                             break;
                         }
                     }
                 });
+    }
+
+    private static boolean matchesAny(Pattern pattern, String... candidates) {
+        for (String candidate : candidates) {
+            if (candidate != null && !candidate.isBlank() && pattern.matcher(candidate).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void updateLastId(GuildMessageChannel channel, List<Message> messages) {
