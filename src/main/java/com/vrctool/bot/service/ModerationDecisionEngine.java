@@ -28,6 +28,7 @@ public class ModerationDecisionEngine {
             String blockedPattern,
             LlmClient.RiskLevel llmRiskLevel,
             String llmRationale,
+            String selfReviewNote,
             int recentKeywordMatches,
             int totalRecentTokens,
             int channelRiskScore,
@@ -45,6 +46,8 @@ public class ModerationDecisionEngine {
     ) {}
 
     public record Decision(Action action, DecisionContext context) {}
+
+    private record ReviewResult(Action action, String note) {}
 
     private static final Pattern LINK_PATTERN = Pattern.compile("https?://\\S+", Pattern.CASE_INSENSITIVE);
 
@@ -148,12 +151,23 @@ public class ModerationDecisionEngine {
             action = Action.ALLOW;
         }
 
+        ReviewResult review = reviewAction(
+                action,
+                matchedKeyword,
+                blockedPattern,
+                llmClassification.riskLevel(),
+                messageRiskScore,
+                historyRiskScore,
+                channelRiskScore
+        );
+
         DecisionContext context = new DecisionContext(
                 content,
                 matchedKeyword,
                 blockedPattern,
                 llmClassification.riskLevel(),
                 llmClassification.rationale(),
+                review.note(),
                 recentKeywordMatches,
                 totalRecentTokens,
                 channelRiskScore,
@@ -170,7 +184,7 @@ public class ModerationDecisionEngine {
                 config.modEscalateThreshold()
         );
 
-        return new Decision(action, context);
+        return new Decision(review.action(), context);
     }
 
     private static boolean matchesAny(Pattern pattern, String... candidates) {
@@ -241,4 +255,35 @@ public class ModerationDecisionEngine {
         }
         return letters == 0 ? 0.0 : (double) uppercase / letters;
     }
+
+    private static ReviewResult reviewAction(
+            Action proposed,
+            String matchedKeyword,
+            String blockedPattern,
+            LlmClient.RiskLevel llmRiskLevel,
+            int messageRiskScore,
+            int historyRiskScore,
+            int channelRiskScore
+    ) {
+        if (proposed == Action.ALLOW) {
+            return new ReviewResult(Action.ALLOW, "No moderation action required.");
+        }
+        if (blockedPattern != null || matchedKeyword != null) {
+            return new ReviewResult(proposed, "Rule match present; keep action.");
+        }
+        if (llmRiskLevel != LlmClient.RiskLevel.LOW) {
+            return new ReviewResult(proposed, "LLM risk elevated; keep action.");
+        }
+        if (historyRiskScore > 0) {
+            return new ReviewResult(proposed, "Recent history indicates spam; keep action.");
+        }
+        if (channelRiskScore > 0) {
+            return new ReviewResult(proposed, "Channel risk profile elevated; keep action.");
+        }
+        if (messageRiskScore >= 12) {
+            return new ReviewResult(proposed, "Message formatting indicates spam; keep action.");
+        }
+        return new ReviewResult(Action.ALLOW, "Low risk with no rule matches; action downgraded.");
+    }
+
 }
