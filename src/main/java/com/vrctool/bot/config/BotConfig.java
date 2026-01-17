@@ -31,7 +31,9 @@ public record BotConfig(
         int modDeleteThreshold,
         int modEscalateThreshold,
         String modEscalationChannelId,
-        java.util.Map<String, Integer> channelRiskProfiles
+        java.util.Map<String, Integer> channelRiskProfiles,
+        boolean llmClassificationEnabled,
+        String llmEndpointUrl
 ) {
     private static final Pattern ENV_KEY_PATTERN = Pattern.compile("[A-Z0-9_]+");
     private static final Dotenv DOTENV = Dotenv.configure().ignoreIfMissing().load();
@@ -84,7 +86,9 @@ public record BotConfig(
                 parseIntOrDefault(getOptionalEnv("MOD_DELETE_THRESHOLD"), 60),
                 parseIntOrDefault(getOptionalEnv("MOD_ESCALATE_THRESHOLD"), 80),
                 getOptionalEnv("MOD_ESCALATION_CHANNEL_ID"),
-                parseChannelRiskProfiles(getOptionalEnv("MOD_CHANNEL_RISK_SCORES"))
+                parseChannelRiskProfiles(getOptionalEnv("MOD_CHANNEL_RISK_SCORES")),
+                parseBooleanOrDefault(getOptionalEnv("LLM_CLASSIFICATION_ENABLED"), false),
+                getOptionalEnv("LLM_ENDPOINT_URL")
         );
     }
 
@@ -251,6 +255,13 @@ public record BotConfig(
             }
         }
         return Duration.ofSeconds(Math.max(5, seconds));
+    }
+
+    private static boolean parseBooleanOrDefault(String value, boolean defaultValue) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        return Boolean.parseBoolean(value.trim());
     }
 
     private static List<String> defaultKeywords() {
