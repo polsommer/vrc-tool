@@ -102,7 +102,8 @@ public final class TextNormalizer {
             }
             Set<String> group = new LinkedHashSet<>();
             group.add(key);
-            for (String synonym : entry.getValue() == null ? List.of() : entry.getValue()) {
+            List<String> values = entry.getValue();
+            for (String synonym : values == null ? List.of() : values) {
                 String normalized = normalizeToken(synonym);
                 if (!normalized.isBlank()) {
                     group.add(normalized);
