@@ -8,6 +8,8 @@ import com.vrctool.bot.service.ActivePlayersServer;
 import com.vrctool.bot.service.FaqService;
 import com.vrctool.bot.service.ModerationScanService;
 import com.vrctool.bot.service.TemplateService;
+import com.vrctool.bot.service.WordMemoryStore;
+import java.nio.file.Paths;
 import java.util.List;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
@@ -26,7 +28,9 @@ public final class BotLauncher {
         }
         FaqService faqvService = new FaqService("/faq.json");
         TemplateService templateService = new TemplateService(config);
-        ModerationScanService scanService = new ModerationScanService(config);
+        WordMemoryStore wordMemoryStore = new WordMemoryStore(Paths.get(config.wordMemoryPath()));
+        wordMemoryStore.load();
+        ModerationScanService scanService = new ModerationScanService(config, wordMemoryStore);
 
         JDA jda = JDABuilder.createDefault(config.discordToken())
                 .enableIntents(List.of(
@@ -37,7 +41,7 @@ public final class BotLauncher {
                 .setMemberCachePolicy(MemberCachePolicy.ONLINE)
                 .addEventListeners(
                         new MemberJoinListener(config, templateService),
-                        new MessageModerationListener(config)
+                        new MessageModerationListener(config, wordMemoryStore)
                 )
                 .build();
 
