@@ -26,12 +26,15 @@ public class ModerationDecisionEngine {
             String content,
             String matchedKeyword,
             String blockedPattern,
+            LlmClient.RiskLevel llmRiskLevel,
+            String llmRationale,
             int recentKeywordMatches,
             int totalRecentTokens,
             int channelRiskScore,
             int messageRiskScore,
             int historyRiskScore,
             int baseRiskScore,
+            int llmScoreFloor,
             int totalRiskScore,
             int messageLength,
             int linkCount,
@@ -50,11 +53,18 @@ public class ModerationDecisionEngine {
     private final List<Pattern> blockedPatterns;
     private final List<KeywordPattern> keywordPatterns;
     private final TextNormalizer textNormalizer;
+    private final LlmClient llmClient;
 
-    public ModerationDecisionEngine(BotConfig config, WordMemoryStore wordMemoryStore, TextNormalizer textNormalizer) {
+    public ModerationDecisionEngine(
+            BotConfig config,
+            WordMemoryStore wordMemoryStore,
+            TextNormalizer textNormalizer,
+            LlmClient llmClient
+    ) {
         this.config = config;
         this.wordMemoryStore = wordMemoryStore;
         this.textNormalizer = textNormalizer;
+        this.llmClient = llmClient;
         this.blockedPatterns = config.blockedPatterns();
         this.keywordPatterns = config.scanKeywords().stream()
                 .map(keyword -> new KeywordPattern(keyword, ModerationPatterns.compileKeywordPattern(keyword)))
@@ -114,7 +124,18 @@ public class ModerationDecisionEngine {
             baseRiskScore += 30;
         }
 
+        LlmClient.LlmClassification llmClassification = llmClient.classifyMessage(
+                content,
+                new LlmClient.LlmRuleContext(matchedKeyword, blockedPattern)
+        );
+        int llmScoreFloor = switch (llmClassification.riskLevel()) {
+            case HIGH -> config.modEscalateThreshold();
+            case MEDIUM -> config.modDeleteThreshold();
+            case LOW -> 0;
+        };
+
         int totalRiskScore = baseRiskScore + messageRiskScore + historyRiskScore + channelRiskScore;
+        totalRiskScore = Math.max(totalRiskScore, llmScoreFloor);
 
         Action action;
         if (totalRiskScore >= config.modEscalateThreshold()) {
@@ -131,12 +152,15 @@ public class ModerationDecisionEngine {
                 content,
                 matchedKeyword,
                 blockedPattern,
+                llmClassification.riskLevel(),
+                llmClassification.rationale(),
                 recentKeywordMatches,
                 totalRecentTokens,
                 channelRiskScore,
                 messageRiskScore,
                 historyRiskScore,
                 baseRiskScore,
+                llmScoreFloor,
                 totalRiskScore,
                 messageLength,
                 linkCount,

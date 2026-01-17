@@ -1,6 +1,7 @@
 package com.vrctool.bot.listener;
 
 import com.vrctool.bot.config.BotConfig;
+import com.vrctool.bot.service.LlmHttpClient;
 import com.vrctool.bot.service.ModerationDecisionEngine;
 import com.vrctool.bot.service.WordMemoryStore;
 import com.vrctool.bot.util.TextNormalizer;
@@ -22,7 +23,12 @@ public class MessageModerationListener extends ListenerAdapter {
         this.config = config;
         this.wordMemoryStore = wordMemoryStore;
         this.textNormalizer = textNormalizer;
-        this.decisionEngine = new ModerationDecisionEngine(config, wordMemoryStore, textNormalizer);
+        this.decisionEngine = new ModerationDecisionEngine(
+                config,
+                wordMemoryStore,
+                textNormalizer,
+                new LlmHttpClient(config)
+        );
     }
 
     @Override
@@ -88,6 +94,8 @@ public class MessageModerationListener extends ListenerAdapter {
                 .addField("Content", context.content(), false)
                 .addField("Matched keyword", safeValue(context.matchedKeyword()), true)
                 .addField("Blocked pattern", safeValue(context.blockedPattern()), true)
+                .addField("LLM risk", safeValue(context.llmRiskLevel()), true)
+                .addField("LLM rationale", safeValue(context.llmRationale()), false)
                 .addField("Scores (base/format/history/channel/total)", String.format(
                         "%d / %d / %d / %d / %d",
                         context.baseRiskScore(),
@@ -96,6 +104,7 @@ public class MessageModerationListener extends ListenerAdapter {
                         context.channelRiskScore(),
                         context.totalRiskScore()
                 ), false)
+                .addField("LLM score floor", String.valueOf(context.llmScoreFloor()), true)
                 .addField("Thresholds (warn/delete/escalate)", String.format(
                         "%d / %d / %d",
                         context.warnThreshold(),
@@ -137,6 +146,8 @@ public class MessageModerationListener extends ListenerAdapter {
                 .addField("Content", context.content(), false)
                 .addField("Matched keyword", safeValue(context.matchedKeyword()), true)
                 .addField("Blocked pattern", safeValue(context.blockedPattern()), true)
+                .addField("LLM risk", safeValue(context.llmRiskLevel()), true)
+                .addField("LLM rationale", safeValue(context.llmRationale()), false)
                 .addField("Scores (base/format/history/channel/total)", String.format(
                         "%d / %d / %d / %d / %d",
                         context.baseRiskScore(),
@@ -145,6 +156,7 @@ public class MessageModerationListener extends ListenerAdapter {
                         context.channelRiskScore(),
                         context.totalRiskScore()
                 ), false)
+                .addField("LLM score floor", String.valueOf(context.llmScoreFloor()), true)
                 .addField("Thresholds (warn/delete/escalate)", String.format(
                         "%d / %d / %d",
                         context.warnThreshold(),
@@ -222,6 +234,10 @@ public class MessageModerationListener extends ListenerAdapter {
 
     private String safeValue(String value) {
         return value == null || value.isBlank() ? "None" : value;
+    }
+
+    private String safeValue(Object value) {
+        return value == null ? "None" : value.toString();
     }
 
 }
