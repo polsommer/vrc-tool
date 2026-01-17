@@ -102,10 +102,13 @@ public final class TextNormalizer {
             }
             Set<String> group = new LinkedHashSet<>();
             group.add(key);
-            for (String synonym : entry.getValue() == null ? List.of() : entry.getValue()) {
-                String normalized = normalizeToken(synonym);
-                if (!normalized.isBlank()) {
-                    group.add(normalized);
+            List<String> values = entry.getValue();
+            if (values != null) {
+                for (String synonym : values) {
+                    String normalized = normalizeToken(synonym);
+                    if (!normalized.isBlank()) {
+                        group.add(normalized);
+                    }
                 }
             }
             for (String term : group) {
