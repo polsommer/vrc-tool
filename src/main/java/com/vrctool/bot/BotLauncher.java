@@ -24,7 +24,7 @@ public final class BotLauncher {
             System.err.println("Set DISCORD_TOKEN and any required IDs before launching the bot.");
             return;
         }
-        FaqService faqService = new FaqService("/faq.json");
+        FaqService faqvService = new FaqService("/faq.json");
         TemplateService templateService = new TemplateService(config);
         ModerationScanService scanService = new ModerationScanService(config);
 
@@ -36,7 +36,6 @@ public final class BotLauncher {
                 ))
                 .setMemberCachePolicy(MemberCachePolicy.ONLINE)
                 .addEventListeners(
-                        new SlashCommandListener(config, faqService, templateService),
                         new MemberJoinListener(config, templateService),
                         new MessageModerationListener(config)
                 )
