@@ -335,7 +335,7 @@ public class SlashCommandListener extends ListenerAdapter {
                             targetUserId,
                             targetMention,
                             cutoff,
-                            messages,
+                            messages.getRetrievedHistory(),
                             deletedCount
                     ),
                     error -> event.getHook()
@@ -350,7 +350,7 @@ public class SlashCommandListener extends ListenerAdapter {
                             targetUserId,
                             targetMention,
                             cutoff,
-                            messages,
+                            messages.getRetrievedHistory(),
                             deletedCount
                     ),
                     error -> event.getHook()
