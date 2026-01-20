@@ -5,6 +5,7 @@ import com.vrctool.bot.service.FaqEntry;
 import com.vrctool.bot.service.FaqService;
 import com.vrctool.bot.service.TemplateService;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -259,24 +260,21 @@ public class SlashCommandListener extends ListenerAdapter {
                 .filter(m -> !m.getTimeCreated().isAfter(bulkLimit))
                 .collect(Collectors.toList());
 
-        RestAction<Void> deleteChain = null;
+        List<RestAction<Void>> deleteActions = new ArrayList<>();
 
         for (int i = 0; i < bulkDeletable.size(); i += 100) {
             List<Message> chunk = bulkDeletable.subList(
                     i, Math.min(i + 100, bulkDeletable.size()));
 
             if (chunk.size() >= 2) {
-                RestAction<Void> action = channel.deleteMessages(chunk);
-                deleteChain = deleteChain == null ? action : deleteChain.andThen(action);
+                deleteActions.add(channel.deleteMessages(chunk));
             } else if (chunk.size() == 1) {
-                RestAction<Void> action = channel.deleteMessageById(chunk.get(0).getId());
-                deleteChain = deleteChain == null ? action : deleteChain.andThen(action);
+                deleteActions.add(channel.deleteMessageById(chunk.get(0).getId()));
             }
         }
 
         for (Message m : singleDeletable) {
-            RestAction<Void> action = channel.deleteMessageById(m.getId());
-            deleteChain = deleteChain == null ? action : deleteChain.andThen(action);
+            deleteActions.add(channel.deleteMessageById(m.getId()));
         }
 
         int updatedCount = deletedCount + candidates.size();
@@ -305,18 +303,19 @@ public class SlashCommandListener extends ListenerAdapter {
             }
         };
 
-        if (deleteChain == null) {
+        if (deleteActions.isEmpty()) {
             onSuccess.accept(null);
             return;
         }
 
-        deleteChain.queue(
-                onSuccess,
-                error -> event.getHook()
-                        .sendMessage("Unable to purge messages: "
-                                + error.getMessage())
-                        .queue()
-        );
+        RestAction.allOf(deleteActions)
+                .queue(
+                        ignored -> onSuccess.accept(null),
+                        error -> event.getHook()
+                                .sendMessage("Unable to purge messages: "
+                                        + error.getMessage())
+                                .queue()
+                );
     }
 
     private void purgeUserMessages(
