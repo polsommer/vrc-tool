@@ -25,6 +25,8 @@ import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.CommandData;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
+import net.dv8tion.jda.api.requests.RestAction;
+import net.dv8tion.jda.api.requests.RestAction;
 
 public class SlashCommandListener extends ListenerAdapter {
     private static final int MAX_PURGE = 100;
@@ -63,6 +65,7 @@ public class SlashCommandListener extends ListenerAdapter {
                         .addOption(OptionType.STRING, "message", "Alert details for the staff team", true),
                 Commands.slash("purge", "Remove a batch of recent messages.")
                         .addOption(OptionType.INTEGER, "amount", "How many messages to delete (1-100)", true)
+                        .addOption(OptionType.USER, "user", "User whose messages should be removed", true)
                         .addOption(OptionType.CHANNEL, "channel", "Target channel (defaults to current)", false)
                 ,
                 Commands.slash("purge-user", "Remove recent messages from a specific user.")
@@ -195,64 +198,132 @@ public class SlashCommandListener extends ListenerAdapter {
         });
     }
 
-    private void handleUserPurge(SlashCommandInteractionEvent event) {
-        Member member = event.getMember();
-        if (member == null) {
-            event.reply("Unable to identify requestor.").setEphemeral(true).queue();
-            return;
-        }
-        if (!isStaff(member)) {
-            event.reply("You do not have permission to use this command.").setEphemeral(true).queue();
-            return;
-        }
-        GuildMessageChannel channel = resolveChannel(event);
-        if (channel == null) {
-            event.reply("Please choose a text channel within this server.").setEphemeral(true).queue();
-            return;
-        }
-        OptionMapping userOption = Objects.requireNonNull(event.getOption("user"));
-        String targetUserId = userOption.getAsUser().getId();
-        String targetMention = userOption.getAsUser().getAsMention();
-        OffsetDateTime cutoff = OffsetDateTime.now().minusDays(14);
-        event.deferReply(true).queue();
-        MessageHistory history = channel.getHistory();
-        purgeUserMessages(event, history, channel, targetUserId, targetMention, cutoff, 0);
-    }
-
-    private void purgeUserMessages(
+    private void handleUserPurgePage(
             SlashCommandInteractionEvent event,
-            MessageHistory history,
             GuildMessageChannel channel,
             String targetUserId,
             String targetMention,
             OffsetDateTime cutoff,
-            int deletedCount) {
-        history.retrievePast(MAX_PURGE).queue(messages -> {
-            List<Message> deletable = messages.stream()
-                    .filter(message -> message.getTimeCreated().isAfter(cutoff))
-                    .filter(message -> message.getAuthor().getId().equals(targetUserId))
-                    .collect(Collectors.toList());
-            if (!deletable.isEmpty()) {
-                if (deletable.size() == 1) {
-                    channel.deleteMessageById(deletable.get(0).getId()).queue();
-                } else {
-                    channel.deleteMessages(deletable).queue();
-                }
+            List<Message> messages,
+            int deletedCount
+    ) {
+        if (messages.isEmpty()) {
+            event.getHook().sendMessage("Purged " + deletedCount + " messages from "
+                    + targetMention + " in " + channel.getAsMention() + ".").queue();
+            return;
+        }
+
+        String nextBeforeId = messages.get(messages.size() - 1).getId();
+
+        OffsetDateTime bulkLimit = OffsetDateTime.now().minusDays(14);
+
+        List<Message> candidates = messages.stream()
+                .filter(m -> m.getTimeCreated().isAfter(cutoff))
+                .filter(m -> m.getAuthor().getId().equals(targetUserId))
+                .collect(Collectors.toList());
+
+        List<Message> bulkDeletable = candidates.stream()
+                .filter(m -> m.getTimeCreated().isAfter(bulkLimit))
+                .collect(Collectors.toList());
+
+        List<Message> singleDeletable = candidates.stream()
+                .filter(m -> !m.getTimeCreated().isAfter(bulkLimit))
+                .collect(Collectors.toList());
+
+        RestAction<Void> deleteChain = RestAction.empty(channel.getJDA());
+
+        for (int i = 0; i < bulkDeletable.size(); i += 100) {
+            List<Message> chunk = bulkDeletable.subList(
+                    i, Math.min(i + 100, bulkDeletable.size()));
+
+            if (chunk.size() >= 2) {
+                deleteChain = deleteChain.andThen(channel.deleteMessages(chunk));
+            } else if (chunk.size() == 1) {
+                deleteChain = deleteChain.andThen(
+                        channel.deleteMessageById(chunk.get(0).getId()));
             }
-            int updatedCount = deletedCount + deletable.size();
-            boolean finished = messages.isEmpty()
-                    || messages.size() < MAX_PURGE
-                    || messages.get(messages.size() - 1).getTimeCreated().isBefore(cutoff);
-            if (finished) {
-                event.getHook().sendMessage("Purged " + updatedCount + " messages from "
-                                + targetMention + " in " + channel.getAsMention() + ".")
-                        .queue();
-                return;
-            }
-            purgeUserMessages(event, history, channel, targetUserId, targetMention, cutoff, updatedCount);
-        }, error -> event.getHook().sendMessage("Unable to purge messages: " + error.getMessage())
-                .queue());
+        }
+
+        for (Message m : singleDeletable) {
+            deleteChain = deleteChain.andThen(
+                    channel.deleteMessageById(m.getId()));
+        }
+
+        int updatedCount = deletedCount + candidates.size();
+
+        boolean reachedCutoff =
+                messages.get(messages.size() - 1)
+                        .getTimeCreated().isBefore(cutoff);
+
+        boolean lastPage = messages.size() < MAX_PURGE;
+
+        deleteChain.queue(
+                success -> {
+                    if (reachedCutoff || lastPage) {
+                        event.getHook().sendMessage("Purged " + updatedCount
+                                + " messages from " + targetMention
+                                + " in " + channel.getAsMention() + ".").queue();
+                    } else {
+                        purgeUserMessages(
+                                event,
+                                channel,
+                                targetUserId,
+                                targetMention,
+                                cutoff,
+                                nextBeforeId,
+                                updatedCount
+                        );
+                    }
+                },
+                error -> event.getHook()
+                        .sendMessage("Unable to purge messages: "
+                                + error.getMessage())
+                        .queue()
+        );
     }
+
+    private void purgeUserMessages(
+            SlashCommandInteractionEvent event,
+            GuildMessageChannel channel,
+            String targetUserId,
+            String targetMention,
+            OffsetDateTime cutoff,
+            String beforeMessageId,
+            int deletedCount
+    ) {
+        if (beforeMessageId == null) {
+            channel.getHistory().retrievePast(MAX_PURGE).queue(
+                    messages -> handleUserPurgePage(
+                            event,
+                            channel,
+                            targetUserId,
+                            targetMention,
+                            cutoff,
+                            messages,
+                            deletedCount
+                    ),
+                    error -> event.getHook()
+                            .sendMessage("Unable to purge messages: " + error.getMessage())
+                            .queue()
+            );
+        } else {
+            channel.getHistoryBefore(beforeMessageId, MAX_PURGE).queue(
+                    messages -> handleUserPurgePage(
+                            event,
+                            channel,
+                            targetUserId,
+                            targetMention,
+                            cutoff,
+                            messages,
+                            deletedCount
+                    ),
+                    error -> event.getHook()
+                            .sendMessage("Unable to purge messages: " + error.getMessage())
+                            .queue()
+            );
+        }
+    }
+
 
     private void handleStaffAlert(SlashCommandInteractionEvent event) {
         Member member = event.getMember();
