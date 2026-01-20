@@ -26,7 +26,7 @@ import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.CommandData;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.requests.RestAction;
-import net.dv8tion.jda.api.requests.RestAction;
+import net.dv8tion.jda.api.entities.User;
 
 public class SlashCommandListener extends ListenerAdapter {
     private static final int MAX_PURGE = 100;
@@ -196,6 +196,35 @@ public class SlashCommandListener extends ListenerAdapter {
                     .setEphemeral(true)
                     .queue();
         });
+    }
+
+    private void handleUserPurge(SlashCommandInteractionEvent event) {
+        Member member = event.getMember();
+        if (member == null) {
+            event.reply("Unable to identify requestor.").setEphemeral(true).queue();
+            return;
+        }
+        if (!isStaff(member)) {
+            event.reply("You do not have permission to use this command.").setEphemeral(true).queue();
+            return;
+        }
+        User targetUser = Objects.requireNonNull(event.getOption("user")).getAsUser();
+        GuildMessageChannel channel = resolveChannel(event);
+        if (channel == null) {
+            event.reply("Please choose a text channel within this server.").setEphemeral(true).queue();
+            return;
+        }
+        OffsetDateTime cutoff = OffsetDateTime.now().minusDays(30);
+        event.deferReply(true).queue();
+        purgeUserMessages(
+                event,
+                channel,
+                targetUser.getId(),
+                targetUser.getAsMention(),
+                cutoff,
+                null,
+                0
+        );
     }
 
     private void handleUserPurgePage(
