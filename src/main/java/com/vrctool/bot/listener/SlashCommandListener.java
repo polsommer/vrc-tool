@@ -14,6 +14,7 @@ import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Message;
+import net.dv8tion.jda.api.entities.MessageHistory;
 import net.dv8tion.jda.api.entities.channel.middleman.GuildMessageChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.events.session.ReadyEvent;
@@ -63,6 +64,10 @@ public class SlashCommandListener extends ListenerAdapter {
                 Commands.slash("purge", "Remove a batch of recent messages.")
                         .addOption(OptionType.INTEGER, "amount", "How many messages to delete (1-100)", true)
                         .addOption(OptionType.CHANNEL, "channel", "Target channel (defaults to current)", false)
+                ,
+                Commands.slash("purge-user", "Remove recent messages from a specific user.")
+                        .addOption(OptionType.USER, "user", "User whose messages should be removed", true)
+                        .addOption(OptionType.CHANNEL, "channel", "Target channel (defaults to current)", false)
         );
 
         if (config.guildId() != null) {
@@ -86,6 +91,7 @@ public class SlashCommandListener extends ListenerAdapter {
             case "event-create" -> handleEventCreate(event);
             case "staff-alert" -> handleStaffAlert(event);
             case "purge" -> handlePurge(event);
+            case "purge-user" -> handleUserPurge(event);
             default -> event.reply("Unknown command.").setEphemeral(true).queue();
         }
     }
@@ -183,6 +189,61 @@ public class SlashCommandListener extends ListenerAdapter {
                     .setEphemeral(true)
                     .queue();
         });
+    }
+
+    private void handleUserPurge(SlashCommandInteractionEvent event) {
+        Member member = event.getMember();
+        if (member == null) {
+            event.reply("Unable to identify requestor.").setEphemeral(true).queue();
+            return;
+        }
+        if (!isStaff(member)) {
+            event.reply("You do not have permission to use this command.").setEphemeral(true).queue();
+            return;
+        }
+        GuildMessageChannel channel = resolveChannel(event);
+        if (channel == null) {
+            event.reply("Please choose a text channel within this server.").setEphemeral(true).queue();
+            return;
+        }
+        OptionMapping userOption = Objects.requireNonNull(event.getOption("user"));
+        String targetUserId = userOption.getAsUser().getId();
+        String targetMention = userOption.getAsUser().getAsMention();
+        OffsetDateTime cutoff = OffsetDateTime.now().minusDays(14);
+        event.deferReply(true).queue();
+        MessageHistory history = channel.getHistory();
+        purgeUserMessages(event, history, channel, targetUserId, targetMention, cutoff, 0);
+    }
+
+    private void purgeUserMessages(
+            SlashCommandInteractionEvent event,
+            MessageHistory history,
+            GuildMessageChannel channel,
+            String targetUserId,
+            String targetMention,
+            OffsetDateTime cutoff,
+            int deletedCount) {
+        history.retrievePast(MAX_PURGE).queue(messages -> {
+            List<Message> deletable = messages.stream()
+                    .filter(message -> message.getTimeCreated().isAfter(cutoff))
+                    .filter(message -> message.getAuthor().getId().equals(targetUserId))
+                    .collect(Collectors.toList());
+            if (!deletable.isEmpty()) {
+                channel.deleteMessages(deletable).queue();
+            }
+            int updatedCount = deletedCount + deletable.size();
+            boolean finished = messages.isEmpty()
+                    || messages.size() < MAX_PURGE
+                    || messages.get(messages.size() - 1).getTimeCreated().isBefore(cutoff);
+            if (finished) {
+                event.getHook().sendMessage("Purged " + updatedCount + " messages from "
+                                + targetMention + " in " + channel.getAsMention() + ".")
+                        .queue();
+                return;
+            }
+            purgeUserMessages(event, history, channel, targetUserId, targetMention, cutoff, updatedCount);
+        }, error -> event.getHook().sendMessage("Unable to purge messages: " + error.getMessage())
+                .queue());
     }
 
     private void handleStaffAlert(SlashCommandInteractionEvent event) {
