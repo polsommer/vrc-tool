@@ -259,23 +259,24 @@ public class SlashCommandListener extends ListenerAdapter {
                 .filter(m -> !m.getTimeCreated().isAfter(bulkLimit))
                 .collect(Collectors.toList());
 
-        RestAction<Void> deleteChain = RestAction.empty(channel.getJDA());
+        RestAction<Void> deleteChain = null;
 
         for (int i = 0; i < bulkDeletable.size(); i += 100) {
             List<Message> chunk = bulkDeletable.subList(
                     i, Math.min(i + 100, bulkDeletable.size()));
 
             if (chunk.size() >= 2) {
-                deleteChain = deleteChain.andThen(channel.deleteMessages(chunk));
+                RestAction<Void> action = channel.deleteMessages(chunk);
+                deleteChain = deleteChain == null ? action : deleteChain.andThen(action);
             } else if (chunk.size() == 1) {
-                deleteChain = deleteChain.andThen(
-                        channel.deleteMessageById(chunk.get(0).getId()));
+                RestAction<Void> action = channel.deleteMessageById(chunk.get(0).getId());
+                deleteChain = deleteChain == null ? action : deleteChain.andThen(action);
             }
         }
 
         for (Message m : singleDeletable) {
-            deleteChain = deleteChain.andThen(
-                    channel.deleteMessageById(m.getId()));
+            RestAction<Void> action = channel.deleteMessageById(m.getId());
+            deleteChain = deleteChain == null ? action : deleteChain.andThen(action);
         }
 
         int updatedCount = deletedCount + candidates.size();
@@ -286,24 +287,31 @@ public class SlashCommandListener extends ListenerAdapter {
 
         boolean lastPage = messages.size() < MAX_PURGE;
 
+        java.util.function.Consumer<Void> onSuccess = ignored -> {
+            if (reachedCutoff || lastPage) {
+                event.getHook().sendMessage("Purged " + updatedCount
+                        + " messages from " + targetMention
+                        + " in " + channel.getAsMention() + ".").queue();
+            } else {
+                purgeUserMessages(
+                        event,
+                        channel,
+                        targetUserId,
+                        targetMention,
+                        cutoff,
+                        nextBeforeId,
+                        updatedCount
+                );
+            }
+        };
+
+        if (deleteChain == null) {
+            onSuccess.accept(null);
+            return;
+        }
+
         deleteChain.queue(
-                success -> {
-                    if (reachedCutoff || lastPage) {
-                        event.getHook().sendMessage("Purged " + updatedCount
-                                + " messages from " + targetMention
-                                + " in " + channel.getAsMention() + ".").queue();
-                    } else {
-                        purgeUserMessages(
-                                event,
-                                channel,
-                                targetUserId,
-                                targetMention,
-                                cutoff,
-                                nextBeforeId,
-                                updatedCount
-                        );
-                    }
-                },
+                onSuccess,
                 error -> event.getHook()
                         .sendMessage("Unable to purge messages: "
                                 + error.getMessage())
