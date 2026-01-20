@@ -184,7 +184,11 @@ public class SlashCommandListener extends ListenerAdapter {
                 event.reply("No recent messages were eligible for deletion.").setEphemeral(true).queue();
                 return;
             }
-            channel.deleteMessages(deletable).queue();
+            if (deletable.size() == 1) {
+                channel.deleteMessageById(deletable.get(0).getId()).queue();
+            } else {
+                channel.deleteMessages(deletable).queue();
+            }
             event.reply("Purged " + deletable.size() + " messages in " + channel.getAsMention() + ".")
                     .setEphemeral(true)
                     .queue();
@@ -229,7 +233,11 @@ public class SlashCommandListener extends ListenerAdapter {
                     .filter(message -> message.getAuthor().getId().equals(targetUserId))
                     .collect(Collectors.toList());
             if (!deletable.isEmpty()) {
-                channel.deleteMessages(deletable).queue();
+                if (deletable.size() == 1) {
+                    channel.deleteMessageById(deletable.get(0).getId()).queue();
+                } else {
+                    channel.deleteMessages(deletable).queue();
+                }
             }
             int updatedCount = deletedCount + deletable.size();
             boolean finished = messages.isEmpty()
