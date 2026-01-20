@@ -318,6 +318,26 @@ public class SlashCommandListener extends ListenerAdapter {
                 );
     }
 
+    private void handleUserPurgePage(
+            SlashCommandInteractionEvent event,
+            GuildMessageChannel channel,
+            String targetUserId,
+            String targetMention,
+            OffsetDateTime cutoff,
+            MessageHistory messages,
+            int deletedCount
+    ) {
+        handleUserPurgePage(
+                event,
+                channel,
+                targetUserId,
+                targetMention,
+                cutoff,
+                messages.getRetrievedHistory(),
+                deletedCount
+        );
+    }
+
     private void purgeUserMessages(
             SlashCommandInteractionEvent event,
             GuildMessageChannel channel,
@@ -335,7 +355,7 @@ public class SlashCommandListener extends ListenerAdapter {
                             targetUserId,
                             targetMention,
                             cutoff,
-                            messages.getRetrievedHistory(),
+                            messages,
                             deletedCount
                     ),
                     error -> event.getHook()
@@ -350,7 +370,7 @@ public class SlashCommandListener extends ListenerAdapter {
                             targetUserId,
                             targetMention,
                             cutoff,
-                            messages.getRetrievedHistory(),
+                            messages,
                             deletedCount
                     ),
                     error -> event.getHook()
