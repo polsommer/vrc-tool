@@ -30,11 +30,15 @@ public class LlmHttpClient implements LlmClient {
     @Override
     public LlmClassification classifyMessage(String content, LlmRuleContext ruleContext) {
         if (!config.llmClassificationEnabled()) {
-            return new LlmClassification(RiskLevel.LOW, "LLM classification disabled.");
+            LlmClassification classification = new LlmClassification(RiskLevel.LOW, "LLM classification disabled.");
+            logDecision("disabled", content, ruleContext, classification, "LLM classification disabled in config.");
+            return classification;
         }
         String endpoint = config.llmEndpointUrl();
         if (endpoint == null || endpoint.isBlank()) {
-            return classifyByRules(ruleContext);
+            LlmClassification classification = classifyByRules(ruleContext);
+            logDecision("rules", content, ruleContext, classification, "LLM endpoint not configured.");
+            return classification;
         }
         try {
             HttpRequest request = HttpRequest.newBuilder()
@@ -45,14 +49,28 @@ public class LlmHttpClient implements LlmClient {
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                return classifyByRules(ruleContext);
+                LlmClassification classification = classifyByRules(ruleContext);
+                logDecision(
+                        "rules",
+                        content,
+                        ruleContext,
+                        classification,
+                        "LLM HTTP status " + response.statusCode() + "; using rules."
+                );
+                return classification;
             }
-            return parseResponse(response.body(), ruleContext);
+            LlmDecision decision = parseResponse(response.body(), ruleContext);
+            logDecision(decision.source(), content, ruleContext, decision.classification(), decision.note());
+            return decision.classification();
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            return classifyByRules(ruleContext);
+            LlmClassification classification = classifyByRules(ruleContext);
+            logDecision("rules", content, ruleContext, classification, "LLM request interrupted; using rules.");
+            return classification;
         } catch (IOException | IllegalArgumentException error) {
-            return classifyByRules(ruleContext);
+            LlmClassification classification = classifyByRules(ruleContext);
+            logDecision("rules", content, ruleContext, classification, "LLM request failed; using rules.");
+            return classification;
         }
     }
 
@@ -64,22 +82,24 @@ public class LlmHttpClient implements LlmClient {
         return objectMapper.writeValueAsString(payload);
     }
 
-    private LlmClassification parseResponse(String body, LlmRuleContext ruleContext) throws IOException {
+    private LlmDecision parseResponse(String body, LlmRuleContext ruleContext) throws IOException {
         JsonNode root = objectMapper.readTree(body);
         JsonNode classificationNode = root.has("classification") ? root.get("classification") : root;
         String level = classificationNode.path("riskLevel").asText(classificationNode.path("risk_level").asText());
         String rationale = classificationNode.path("rationale").asText();
         if (level == null || level.isBlank()) {
-            return classifyByRules(ruleContext);
+            LlmClassification classification = classifyByRules(ruleContext);
+            return new LlmDecision(classification, "rules", "LLM response missing risk level; using rules.");
         }
         try {
             RiskLevel riskLevel = RiskLevel.valueOf(level.trim().toUpperCase());
             String resolvedRationale = rationale == null || rationale.isBlank()
                     ? "LLM classification applied."
                     : rationale.trim();
-            return new LlmClassification(riskLevel, resolvedRationale);
+            return new LlmDecision(new LlmClassification(riskLevel, resolvedRationale), "llm", "LLM response parsed.");
         } catch (IllegalArgumentException error) {
-            return classifyByRules(ruleContext);
+            LlmClassification classification = classifyByRules(ruleContext);
+            return new LlmDecision(classification, "rules", "LLM response had invalid risk level; using rules.");
         }
     }
 
@@ -92,4 +112,50 @@ public class LlmHttpClient implements LlmClient {
         }
         return new LlmClassification(RiskLevel.LOW, "No rules matched.");
     }
+
+    private void logDecision(
+            String source,
+            String content,
+            LlmRuleContext ruleContext,
+            LlmClassification classification,
+            String note
+    ) {
+        if (!config.llmDebugEnabled()) {
+            return;
+        }
+        String preview = summarizeContent(content);
+        String matchedKeyword = safeValue(ruleContext.matchedKeyword());
+        String blockedPattern = safeValue(ruleContext.blockedPattern());
+        String resolvedNote = note == null || note.isBlank() ? "No additional notes." : note.trim();
+        System.out.println(
+                "[LLM_DEBUG] Professional reasoning summary | source=" + source
+                        + " | risk=" + classification.riskLevel()
+                        + " | rationale=\"" + classification.rationale() + "\""
+                        + " | signals={blockedPattern=" + blockedPattern
+                        + ", matchedKeyword=" + matchedKeyword + "}"
+                        + " | messageLength=" + (content == null ? 0 : content.length())
+                        + " | messagePreview=\"" + preview + "\""
+                        + " | note=\"" + resolvedNote + "\""
+        );
+    }
+
+    private String summarizeContent(String content) {
+        if (content == null || content.isBlank()) {
+            return "n/a";
+        }
+        String normalized = content.trim().replaceAll("\\s+", " ");
+        if (normalized.length() <= 120) {
+            return normalized;
+        }
+        return normalized.substring(0, 117) + "...";
+    }
+
+    private String safeValue(String value) {
+        if (value == null || value.isBlank()) {
+            return "none";
+        }
+        return value.trim();
+    }
+
+    private record LlmDecision(LlmClassification classification, String source, String note) {}
 }

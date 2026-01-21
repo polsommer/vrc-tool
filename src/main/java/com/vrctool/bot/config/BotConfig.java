@@ -33,6 +33,7 @@ public record BotConfig(
         String modEscalationChannelId,
         java.util.Map<String, Integer> channelRiskProfiles,
         boolean llmClassificationEnabled,
+        boolean llmDebugEnabled,
         String llmEndpointUrl
 ) {
     private static final Pattern ENV_KEY_PATTERN = Pattern.compile("[A-Z0-9_]+");
@@ -88,6 +89,7 @@ public record BotConfig(
                 getOptionalEnv("MOD_ESCALATION_CHANNEL_ID"),
                 parseChannelRiskProfiles(getOptionalEnv("MOD_CHANNEL_RISK_SCORES")),
                 parseBooleanOrDefault(getOptionalEnv("LLM_CLASSIFICATION_ENABLED"), false),
+                parseBooleanOrDefault(getOptionalEnv("LLM_DEBUG_ENABLED"), false),
                 getOptionalEnv("LLM_ENDPOINT_URL")
         );
     }
