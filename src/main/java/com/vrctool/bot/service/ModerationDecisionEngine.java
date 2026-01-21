@@ -71,6 +71,22 @@ public class ModerationDecisionEngine {
             "\\b(report|reported|reporting|screenshots|evidence|proof|log|logs)\\b",
             Pattern.CASE_INSENSITIVE
     );
+    private static final Pattern ACCUSATION_SUBJECT_PATTERN = Pattern.compile(
+            "\\b(you('|\\s)?re|u\\s*r|ur|he('|\\s)?s|she('|\\s)?s|they('|\\s)?re|"
+                    + "this\\s+(guy|girl|person)|that\\s+(guy|girl|person)|"
+                    + "him|her|them)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern ACCUSATION_TERM_PATTERN = Pattern.compile(
+            "\\b(pedo|pedophile|groomer|predator|creep|perv|pervert|abuser|rapist|"
+                    + "molester|harasser|stalker|sex\\s*offender|child\\s*abuser)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern PLAYFUL_CONTEXT_PATTERN = Pattern.compile(
+            "\\b(lol|lmao|lmfao|rofl|jk|j/k|just\\s+kidding|kidding|for\\s+fun|"
+                    + "just\\s+joking|joking|banter|teasing|only\\s+joking|messing\\s+around)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
 
     private final BotConfig config;
     private final WordMemoryStore wordMemoryStore;
@@ -135,6 +151,13 @@ public class ModerationDecisionEngine {
                 channel.getId(),
                 member.getId()
         );
+        List<String> recentMessages = wordMemoryStore.getRecentMessages(
+                message.getGuild().getId(),
+                channel.getId(),
+                member.getId(),
+                6
+        );
+        String recentContext = String.join(" ", recentMessages);
         int totalRecentTokens = tokenCounts.values().stream().mapToInt(Integer::intValue).sum();
         int recentKeywordMatches = matchedKeyword == null
                 ? 0
@@ -179,6 +202,11 @@ public class ModerationDecisionEngine {
             action = Action.ALLOW;
         }
 
+        boolean reportContext = isReportContext(content, normalized, expanded)
+                || matchesAny(REPORT_CONTEXT_PATTERN, recentContext);
+        boolean playfulContext = isPlayfulContext(content, normalized, expanded, recentContext);
+        boolean accusationContext = isAccusationContext(content, normalized, expanded, recentContext);
+
         Action adjusted = quickThinkReview(
                 action,
                 matchedKeyword,
@@ -187,19 +215,30 @@ public class ModerationDecisionEngine {
                 messageRiskScore,
                 historyRiskScore,
                 channelRiskScore,
-                content,
-                normalized,
-                expanded
+                reportContext
+        );
+
+        Action accusationAdjusted = adjustForAccusationContext(
+                adjusted,
+                matchedKeyword,
+                blockedPattern,
+                llmClassification.riskLevel(),
+                accusationContext,
+                playfulContext,
+                reportContext
         );
 
         ReviewResult review = reviewAction(
-                adjusted,
+                accusationAdjusted,
                 matchedKeyword,
                 blockedPattern,
                 llmClassification.riskLevel(),
                 messageRiskScore,
                 historyRiskScore,
-                channelRiskScore
+                channelRiskScore,
+                accusationContext,
+                playfulContext,
+                reportContext
         );
 
         DecisionContext context = new DecisionContext(
@@ -290,6 +329,25 @@ public class ModerationDecisionEngine {
         return matchesAny(REPORT_CONTEXT_PATTERN, content, normalized, expanded);
     }
 
+    private static boolean isPlayfulContext(
+            String content,
+            String normalized,
+            String expanded,
+            String recentContext
+    ) {
+        return matchesAny(PLAYFUL_CONTEXT_PATTERN, content, normalized, expanded, recentContext);
+    }
+
+    private static boolean isAccusationContext(
+            String content,
+            String normalized,
+            String expanded,
+            String recentContext
+    ) {
+        return matchesAny(ACCUSATION_TERM_PATTERN, content, normalized, expanded, recentContext)
+                && matchesAny(ACCUSATION_SUBJECT_PATTERN, content, normalized, expanded, recentContext);
+    }
+
     private static String stripAllowedGifLinks(String content) {
         if (content == null || content.isBlank()) {
             return "";
@@ -321,10 +379,19 @@ public class ModerationDecisionEngine {
             LlmClient.RiskLevel llmRiskLevel,
             int messageRiskScore,
             int historyRiskScore,
-            int channelRiskScore
+            int channelRiskScore,
+            boolean accusationContext,
+            boolean playfulContext,
+            boolean reportContext
     ) {
         if (proposed == Action.ALLOW) {
             return new ReviewResult(Action.ALLOW, "No moderation action required.");
+        }
+        if (accusationContext && !playfulContext) {
+            String note = reportContext
+                    ? "Accusation with report context; keep action."
+                    : "Accusation without playful cues; keep action.";
+            return new ReviewResult(proposed, note);
         }
         if (blockedPattern != null || matchedKeyword != null) {
             return new ReviewResult(proposed, "Rule match present; keep action.");
@@ -352,9 +419,7 @@ public class ModerationDecisionEngine {
             int messageRiskScore,
             int historyRiskScore,
             int channelRiskScore,
-            String content,
-            String normalized,
-            String expanded
+            boolean reportContext
     ) {
         if (proposed != Action.DELETE) {
             return proposed;
@@ -365,7 +430,6 @@ public class ModerationDecisionEngine {
         if (llmRiskLevel == LlmClient.RiskLevel.HIGH) {
             return proposed;
         }
-        boolean reportContext = isReportContext(content, normalized, expanded);
         boolean softSignals = messageRiskScore < 10 && historyRiskScore < 5 && channelRiskScore == 0;
         if (reportContext || softSignals) {
             return Action.WARN;
@@ -374,6 +438,36 @@ public class ModerationDecisionEngine {
             return Action.ESCALATE_TO_MODS;
         }
         return proposed;
+    }
+
+    private static Action adjustForAccusationContext(
+            Action proposed,
+            String matchedKeyword,
+            String blockedPattern,
+            LlmClient.RiskLevel llmRiskLevel,
+            boolean accusationContext,
+            boolean playfulContext,
+            boolean reportContext
+    ) {
+        if (!accusationContext) {
+            return proposed;
+        }
+        if (blockedPattern != null || matchedKeyword != null) {
+            return proposed;
+        }
+        if (reportContext) {
+            return Action.ESCALATE_TO_MODS;
+        }
+        if (playfulContext) {
+            if (proposed == Action.DELETE || proposed == Action.ESCALATE_TO_MODS) {
+                return Action.WARN;
+            }
+            return proposed;
+        }
+        if (llmRiskLevel == LlmClient.RiskLevel.HIGH) {
+            return Action.ESCALATE_TO_MODS;
+        }
+        return Action.ESCALATE_TO_MODS;
     }
 
 }
