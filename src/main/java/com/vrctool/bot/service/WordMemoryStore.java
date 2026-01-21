@@ -142,7 +142,8 @@ public class WordMemoryStore {
         }
         List<String> results = new ArrayList<>();
         int count = 0;
-        for (MemoryMessage message : messages.descendingIterator()) {
+        for (Iterator<MemoryMessage> iterator = messages.descendingIterator(); iterator.hasNext();) {
+            MemoryMessage message = iterator.next();
             if (message.content() != null && !message.content().isBlank()) {
                 results.add(message.content());
                 count++;
