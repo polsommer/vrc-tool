@@ -27,7 +27,7 @@ public final class BotLauncher {
             System.err.println("Set DISCORD_TOKEN and any required IDs before launching the bot.");
             return;
         }
-        FaqService faqvService = new FaqService("/faq.json");
+        FaqService faqService = new FaqService("/faq.json");
         TemplateService templateService = new TemplateService(config);
         WordMemoryStore wordMemoryStore = new WordMemoryStore(Paths.get(config.wordMemoryPath()));
         wordMemoryStore.load();
@@ -46,7 +46,8 @@ public final class BotLauncher {
                 .setMemberCachePolicy(MemberCachePolicy.ONLINE)
                 .addEventListeners(
                         new MemberJoinListener(config, templateService),
-                        new MessageModerationListener(config, wordMemoryStore, textNormalizer)
+                        new MessageModerationListener(config, wordMemoryStore, textNormalizer),
+                        new SlashCommandListener(config, faqService, templateService)
                 )
                 .build();
 
