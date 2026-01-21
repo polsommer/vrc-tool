@@ -18,6 +18,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import java.util.Iterator;
 
 public class WordMemoryStore {
     private record MemoryKey(String guildId, String channelId, String userId) {}
