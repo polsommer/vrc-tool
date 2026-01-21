@@ -54,6 +54,23 @@ public class ModerationDecisionEngine {
             "https?://(?:www\\.)?tenor\\.com/view/\\S*gif\\S*",
             Pattern.CASE_INSENSITIVE
     );
+    private static final Pattern MINOR_REFERENCE_PATTERN = Pattern.compile(
+            "\\b(minor|underage|child|kid|teen|13|14|15|16|17)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern ADULT_REFERENCE_PATTERN = Pattern.compile(
+            "\\b(adult|18\\+|18\\s*plus|over\\s*18|18\\s*\\+)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern RELATIONSHIP_CONTEXT_PATTERN = Pattern.compile(
+            "\\b(cuddle|cuddling|dating|relationship|boyfriend|girlfriend|bf|gf|romantic|flirt|"
+                    + "kiss|sexual|dm|dms|messages|screenshots|evidence|proof|gifting|gifted)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern REPORT_CONTEXT_PATTERN = Pattern.compile(
+            "\\b(report|reported|reporting|screenshots|evidence|proof|log|logs)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
 
     private final BotConfig config;
     private final WordMemoryStore wordMemoryStore;
@@ -95,6 +112,9 @@ public class ModerationDecisionEngine {
                 matchedKeyword = keywordPattern.keyword();
                 break;
             }
+        }
+        if (matchedKeyword == null && isAgeGapConcern(content, normalized, expanded)) {
+            matchedKeyword = "age gap (adult/minor)";
         }
 
         String blockedPattern = null;
@@ -159,8 +179,21 @@ public class ModerationDecisionEngine {
             action = Action.ALLOW;
         }
 
-        ReviewResult review = reviewAction(
+        Action adjusted = quickThinkReview(
                 action,
+                matchedKeyword,
+                blockedPattern,
+                llmClassification.riskLevel(),
+                messageRiskScore,
+                historyRiskScore,
+                channelRiskScore,
+                content,
+                normalized,
+                expanded
+        );
+
+        ReviewResult review = reviewAction(
+                adjusted,
                 matchedKeyword,
                 blockedPattern,
                 llmClassification.riskLevel(),
@@ -247,6 +280,16 @@ public class ModerationDecisionEngine {
         return count;
     }
 
+    private static boolean isAgeGapConcern(String content, String normalized, String expanded) {
+        return matchesAny(MINOR_REFERENCE_PATTERN, content, normalized, expanded)
+                && matchesAny(ADULT_REFERENCE_PATTERN, content, normalized, expanded)
+                && matchesAny(RELATIONSHIP_CONTEXT_PATTERN, content, normalized, expanded);
+    }
+
+    private static boolean isReportContext(String content, String normalized, String expanded) {
+        return matchesAny(REPORT_CONTEXT_PATTERN, content, normalized, expanded);
+    }
+
     private static String stripAllowedGifLinks(String content) {
         if (content == null || content.isBlank()) {
             return "";
@@ -299,6 +342,38 @@ public class ModerationDecisionEngine {
             return new ReviewResult(proposed, "Message formatting indicates spam; keep action.");
         }
         return new ReviewResult(Action.ALLOW, "Low risk with no rule matches; action downgraded.");
+    }
+
+    private static Action quickThinkReview(
+            Action proposed,
+            String matchedKeyword,
+            String blockedPattern,
+            LlmClient.RiskLevel llmRiskLevel,
+            int messageRiskScore,
+            int historyRiskScore,
+            int channelRiskScore,
+            String content,
+            String normalized,
+            String expanded
+    ) {
+        if (proposed != Action.DELETE) {
+            return proposed;
+        }
+        if (blockedPattern != null) {
+            return proposed;
+        }
+        if (llmRiskLevel == LlmClient.RiskLevel.HIGH) {
+            return proposed;
+        }
+        boolean reportContext = isReportContext(content, normalized, expanded);
+        boolean softSignals = messageRiskScore < 10 && historyRiskScore < 5 && channelRiskScore == 0;
+        if (reportContext || softSignals) {
+            return Action.WARN;
+        }
+        if (matchedKeyword != null && matchedKeyword.contains("age gap")) {
+            return Action.ESCALATE_TO_MODS;
+        }
+        return proposed;
     }
 
 }
