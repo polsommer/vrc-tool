@@ -22,6 +22,20 @@ import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 public class ModerationScanService {
     private record KeywordPattern(String keyword, Pattern pattern) {}
 
+    private static final Pattern MINOR_REFERENCE_PATTERN = Pattern.compile(
+            "\\b(minor|underage|child|kid|teen|13|14|15|16|17)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern ADULT_REFERENCE_PATTERN = Pattern.compile(
+            "\\b(adult|18\\+|18\\s*plus|over\\s*18|18\\s*\\+)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern RELATIONSHIP_CONTEXT_PATTERN = Pattern.compile(
+            "\\b(cuddle|cuddling|dating|relationship|boyfriend|girlfriend|bf|gf|romantic|flirt|"
+                    + "kiss|sexual|dm|dms|messages|screenshots|evidence|proof|gifting|gifted)\\b",
+            Pattern.CASE_INSENSITIVE
+    );
+
     private final BotConfig config;
     private final ScheduledExecutorService scheduler;
     private final Map<String, String> lastMessageIds;
@@ -89,6 +103,10 @@ public class ModerationScanService {
                     TextNormalizer.NormalizedResult normalizedResult = textNormalizer.normalizeAndExpand(content);
                     String normalized = normalizedResult.normalized();
                     String expanded = normalizedResult.expanded();
+                    if (isAgeGapConcern(content, normalized, expanded)) {
+                        logFlag(channel, message, "age gap (adult/minor)");
+                        return;
+                    }
                     for (KeywordPattern keywordPattern : keywordPatterns) {
                         if (matchesAny(keywordPattern.pattern(), content, normalized, expanded)) {
                             logFlag(channel, message, keywordPattern.keyword());
@@ -105,6 +123,12 @@ public class ModerationScanService {
             }
         }
         return false;
+    }
+
+    private static boolean isAgeGapConcern(String content, String normalized, String expanded) {
+        return matchesAny(MINOR_REFERENCE_PATTERN, content, normalized, expanded)
+                && matchesAny(ADULT_REFERENCE_PATTERN, content, normalized, expanded)
+                && matchesAny(RELATIONSHIP_CONTEXT_PATTERN, content, normalized, expanded);
     }
 
     private void updateLastId(GuildMessageChannel channel, List<Message> messages) {
