@@ -27,7 +27,13 @@ public class WordMemoryStore {
             String guildId,
             String channelId,
             String userId,
+            String content,
             Map<String, Integer> tokenCounts
+    ) {}
+
+    private record MemoryMessage(
+            long timestampMillis,
+            String content
     ) {}
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -38,6 +44,7 @@ public class WordMemoryStore {
     private final Duration retention;
     private final Deque<MemoryEvent> events;
     private final Map<MemoryKey, Map<String, Integer>> counts;
+    private final Map<MemoryKey, Deque<MemoryMessage>> recentMessages;
 
     public WordMemoryStore(Path path) {
         this(path, DEFAULT_RETENTION);
@@ -48,6 +55,7 @@ public class WordMemoryStore {
         this.retention = Objects.requireNonNull(retention, "retention");
         this.events = new ArrayDeque<>();
         this.counts = new HashMap<>();
+        this.recentMessages = new HashMap<>();
     }
 
     public synchronized void load() {
@@ -102,6 +110,7 @@ public class WordMemoryStore {
                 guildId,
                 channelId,
                 userId,
+                content,
                 tokenCounts
         );
         boolean compactNeeded = prune(Instant.now());
@@ -111,6 +120,38 @@ public class WordMemoryStore {
         } else {
             appendEvent(event);
         }
+    }
+
+    public synchronized List<String> getRecentMessages(
+            String guildId,
+            String channelId,
+            String userId,
+            int limit
+    ) {
+        if (limit <= 0) {
+            return List.of();
+        }
+        MemoryKey key = new MemoryKey(guildId, channelId, userId);
+        Deque<MemoryMessage> messages = recentMessages.get(key);
+        if (messages == null || messages.isEmpty()) {
+            return List.of();
+        }
+        pruneMessages(messages, Instant.now());
+        if (messages.isEmpty()) {
+            return List.of();
+        }
+        List<String> results = new ArrayList<>();
+        int count = 0;
+        for (MemoryMessage message : messages.descendingIterator()) {
+            if (message.content() != null && !message.content().isBlank()) {
+                results.add(message.content());
+                count++;
+                if (count >= limit) {
+                    break;
+                }
+            }
+        }
+        return results;
     }
 
     public synchronized int getTokenCount(
@@ -154,6 +195,10 @@ public class WordMemoryStore {
         for (Map.Entry<String, Integer> entry : event.tokenCounts().entrySet()) {
             tokenCounts.merge(entry.getKey(), entry.getValue(), Integer::sum);
         }
+        if (event.content() != null && !event.content().isBlank()) {
+            Deque<MemoryMessage> messages = recentMessages.computeIfAbsent(key, ignored -> new ArrayDeque<>());
+            messages.addLast(new MemoryMessage(event.timestampMillis(), event.content()));
+        }
     }
 
     private boolean prune(Instant now) {
@@ -171,6 +216,13 @@ public class WordMemoryStore {
                 }
                 if (tokenCounts.isEmpty()) {
                     counts.remove(key);
+                }
+            }
+            Deque<MemoryMessage> messages = recentMessages.get(key);
+            if (messages != null) {
+                pruneMessages(messages, now);
+                if (messages.isEmpty()) {
+                    recentMessages.remove(key);
                 }
             }
             removed = true;
@@ -213,6 +265,25 @@ public class WordMemoryStore {
         Path parent = path.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
+        }
+    }
+
+    private void pruneMessages(Deque<MemoryMessage> messages, Instant now) {
+        if (messages == null) {
+            return;
+        }
+        while (!messages.isEmpty()) {
+            MemoryMessage first = messages.peekFirst();
+            if (first == null) {
+                messages.removeFirst();
+                continue;
+            }
+            Instant timestamp = Instant.ofEpochMilli(first.timestampMillis());
+            if (timestamp.isBefore(now.minus(retention))) {
+                messages.removeFirst();
+            } else {
+                break;
+            }
         }
     }
 
