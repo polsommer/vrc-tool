@@ -70,7 +70,8 @@ public class SlashCommandListener extends ListenerAdapter {
                         .addOption(OptionType.CHANNEL, "channel", "Target channel (defaults to current)", false)
                 ,
                 Commands.slash("purge-user", "Remove recent messages from a specific user.")
-                        .addOption(OptionType.USER, "user", "User whose messages should be removed", true)
+                        .addOption(OptionType.USER, "user", "User whose messages should be removed", false)
+                        .addOption(OptionType.STRING, "user-id", "User ID or mention (for users not in the server)", false)
                         .addOption(OptionType.CHANNEL, "channel", "Target channel (defaults to current)", false)
         );
 
@@ -209,7 +210,27 @@ public class SlashCommandListener extends ListenerAdapter {
             event.reply("You do not have permission to use this command.").setEphemeral(true).queue();
             return;
         }
-        User targetUser = Objects.requireNonNull(event.getOption("user")).getAsUser();
+        OptionMapping userOption = event.getOption("user");
+        OptionMapping userIdOption = event.getOption("user-id");
+        String targetUserId;
+        String targetMention;
+        if (userOption != null) {
+            User targetUser = userOption.getAsUser();
+            targetUserId = targetUser.getId();
+            targetMention = targetUser.getAsMention();
+        } else if (userIdOption != null) {
+            String rawInput = userIdOption.getAsString();
+            String parsedId = extractUserId(rawInput);
+            if (parsedId == null) {
+                event.reply("Please provide a valid user ID or mention.").setEphemeral(true).queue();
+                return;
+            }
+            targetUserId = parsedId;
+            targetMention = "<@" + parsedId + ">";
+        } else {
+            event.reply("Please provide a user or a user ID to purge.").setEphemeral(true).queue();
+            return;
+        }
         GuildMessageChannel channel = resolveChannel(event);
         if (channel == null) {
             event.reply("Please choose a text channel within this server.").setEphemeral(true).queue();
@@ -220,8 +241,8 @@ public class SlashCommandListener extends ListenerAdapter {
         purgeUserMessages(
                 event,
                 channel,
-                targetUser.getId(),
-                targetUser.getAsMention(),
+                targetUserId,
+                targetMention,
                 cutoff,
                 null,
                 0
@@ -433,6 +454,18 @@ public class SlashCommandListener extends ListenerAdapter {
             return member.hasPermission(Permission.MESSAGE_MANAGE);
         }
         return member.getRoles().stream().anyMatch(role -> role.getId().equals(config.staffRoleId()));
+    }
+
+    private String extractUserId(String rawInput) {
+        if (rawInput == null || rawInput.isBlank()) {
+            return null;
+        }
+        String trimmed = rawInput.trim();
+        String digitsOnly = trimmed.replaceAll("\\D", "");
+        if (digitsOnly.length() < 17 || digitsOnly.length() > 20) {
+            return null;
+        }
+        return digitsOnly;
     }
 
     private net.dv8tion.jda.api.entities.MessageEmbed buildFaqEmbed(FaqEntry entry) {
